@@ -1,0 +1,140 @@
+/* Columnas y barra de filtros inyectadas por la extensión Milov. */
+
+.mlv-col {
+  background: #eef4ff !important;
+  border-left: 2px solid #c7d7f5 !important;
+  white-space: nowrap;
+  font-size: 12px;
+}
+
+.mlv-cell {
+  font-size: 12px;
+  vertical-align: middle;
+  max-width: 220px;
+}
+
+.mlv-cell:first-of-type {
+  border-left: 2px solid #c7d7f5;
+}
+
+.mlv-num {
+  text-align: right;
+}
+
+.mlv-strong {
+  font-weight: 600;
+}
+
+.mlv-dim {
+  color: #9aa3b2;
+}
+
+.mlv-italic {
+  font-style: italic;
+}
+
+.mlv-notes {
+  display: inline-block;
+  max-width: 200px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  vertical-align: bottom;
+}
+
+.mlv-badge {
+  display: inline-block;
+  margin-top: 2px;
+  padding: 1px 6px;
+  border-radius: 9px;
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.mlv-badge-red {
+  background: #fdecec;
+  color: #c62828;
+}
+
+.mlv-hidden {
+  display: none !important;
+}
+
+/* Barra de filtros */
+
+.mlv-bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+  margin: 10px 0;
+  padding: 10px 12px;
+  background: #f6f9ff;
+  border: 1px solid #dbe6fb;
+  border-radius: 6px;
+  font-size: 12px;
+}
+
+.mlv-bar-title {
+  font-weight: 700;
+  color: #1d4ed8;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+  font-size: 11px;
+}
+
+.mlv-bar label {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  margin: 0;
+  font-weight: 500;
+  color: #45505f;
+}
+
+.mlv-bar select,
+.mlv-bar input[type="search"] {
+  padding: 3px 6px;
+  border: 1px solid #ccd6e8;
+  border-radius: 4px;
+  background: #fff;
+  font-size: 12px;
+  max-width: 180px;
+}
+
+.mlv-bar button {
+  padding: 3px 10px;
+  border: 1px solid #ccd6e8;
+  border-radius: 4px;
+  background: #fff;
+  cursor: pointer;
+  font-size: 12px;
+}
+
+.mlv-bar button:hover {
+  background: #eef2fa;
+}
+
+.mlv-chip {
+  padding: 3px 10px;
+  border-radius: 12px;
+  background: #1d4ed8;
+  color: #fff;
+  font-weight: 600;
+}
+
+.mlv-status {
+  color: #7b8494;
+  margin-left: auto;
+}
+
+.mlv-error {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 3px 10px;
+  border-radius: 4px;
+  background: #fdecec;
+  color: #c62828;
+  font-weight: 500;
+}

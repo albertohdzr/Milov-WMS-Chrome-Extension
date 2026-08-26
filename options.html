@@ -1,0 +1,64 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="utf-8">
+  <title>Opciones — Milov Komodin Wave Enrichment</title>
+  <style>
+    body {
+      font-family: -apple-system, "Segoe UI", Roboto, sans-serif;
+      max-width: 560px;
+      margin: 40px auto;
+      padding: 0 20px;
+      color: #1f2733;
+    }
+    h1 { font-size: 20px; }
+    p.hint { color: #6b7280; font-size: 13px; }
+    label { display: block; margin-top: 18px; font-weight: 600; font-size: 14px; }
+    input {
+      width: 100%;
+      box-sizing: border-box;
+      margin-top: 6px;
+      padding: 8px 10px;
+      border: 1px solid #ccd6e8;
+      border-radius: 6px;
+      font-size: 14px;
+      font-family: ui-monospace, monospace;
+    }
+    .row { display: flex; gap: 10px; margin-top: 24px; }
+    button {
+      padding: 8px 16px;
+      border: none;
+      border-radius: 6px;
+      font-size: 14px;
+      cursor: pointer;
+    }
+    #save { background: #1d4ed8; color: #fff; }
+    #test { background: #e8edf7; color: #1f2733; }
+    #status { margin-top: 16px; font-size: 14px; min-height: 20px; }
+    #status.ok { color: #15803d; }
+    #status.err { color: #c62828; }
+  </style>
+</head>
+<body>
+  <h1>Milov — Komodin Wave Enrichment</h1>
+  <p class="hint">
+    La extensión consulta milov-app para enriquecer la tabla "Crear Wave" del WMS.
+    La API key se genera desde milov-app (scripts/create-extension-api-key.mjs) y
+    solo tiene permiso de lectura sobre el enriquecimiento de SOs.
+  </p>
+
+  <label for="apiBase">URL de milov-app</label>
+  <input id="apiBase" type="url" placeholder="https://milov-web-app.vercel.app">
+
+  <label for="apiKey">API key</label>
+  <input id="apiKey" type="password" placeholder="mlv_ext_…" autocomplete="off">
+
+  <div class="row">
+    <button id="save">Guardar</button>
+    <button id="test">Probar conexión</button>
+  </div>
+  <div id="status"></div>
+
+  <script src="options.js"></script>
+</body>
+</html>
