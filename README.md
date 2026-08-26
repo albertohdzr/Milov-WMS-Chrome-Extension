@@ -4,8 +4,8 @@ Extensión de Chrome (Manifest V3) que enriquece la tabla **Crear Wave**
 (`https://milov-wms.komodin.io/wave_new/`) del WMS Komodin con datos de
 milov-app: ruta/zona del cliente, tipo de pedido, fecha de entrega, factura,
 chofer planificado, cantidades por temperatura (seco / frío-congelado) y notas.
-Agrega además una barra de filtros (Ruta, Zona, Chofer, Tipo Pedido, búsqueda)
-y un resumen de cajas de las salidas seleccionadas.
+Agrega además una barra de filtros (Ruta, Zona, Chofer, Tipo Pedido, búsqueda) y
+un resumen de cajas de las salidas seleccionadas.
 
 ## Cómo funciona
 
@@ -14,8 +14,8 @@ y un resumen de cajas de las salidas seleccionadas.
   encabezado **Reff** (número de SO), pide el enriquecimiento y agrega las
   columnas. Un `MutationObserver` reprocesa cada re-render.
 - El service worker es el único que habla con milov-app:
-  `POST /api/sales-order-planning/enrich` con
-  `Authorization: Bearer mlv_ext_…`. El content script nunca ve la API key.
+  `POST /api/sales-order-planning/enrich` con `Authorization: Bearer mlv_ext_…`.
+  El content script nunca ve la API key.
 - Cache de 2 minutos por SO en el service worker.
 
 ## Requisitos en milov-app
@@ -36,14 +36,14 @@ y un resumen de cajas de las salidas seleccionadas.
 2. **Cargar descomprimida** → seleccionar esta carpeta.
 3. Clic derecho en el ícono de la extensión → **Opciones**: pegar la URL de
    milov-app y la API key → **Guardar** → **Probar conexión**.
-4. Abrir `https://milov-wms.komodin.io/wave_new/`, aplicar filtros: las
-   columnas Milov aparecen a la derecha de "Status".
+4. Abrir `https://milov-wms.komodin.io/wave_new/`, aplicar filtros: las columnas
+   Milov aparecen a la derecha de "Status".
 
 ## Desarrollo local
 
 En Opciones se puede apuntar la URL a `http://localhost:3000` (ya está en
-`host_permissions`). Si se usa otro dominio, agregarlo a `host_permissions`
-en `manifest.json` y recargar la extensión.
+`host_permissions`). Si se usa otro dominio, agregarlo a `host_permissions` en
+`manifest.json` y recargar la extensión.
 
 ## Notas / limitaciones
 
@@ -52,4 +52,9 @@ en `manifest.json` y recargar la extensión.
   para una fecha distinta a la fecha de entrega pedida.
 - Si Komodin cambia el HTML de la tabla (encabezado "Reff"), hay que ajustar
   `content.js`.
+- Para subir a chrome store:
+  ```bash
+  zip -r milov-komodin-extension.zip . -x ".git/*" -x ".DS_Store"
+  ```
+
 # Milov-WMS-Chrome-Extension
