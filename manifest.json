@@ -2,7 +2,7 @@
   "manifest_version": 3,
   "name": "Milov — Komodin Wave Enrichment",
   "version": "0.1.0",
-  "description": "Agrega ruta/zona, fecha de entrega, factura, chofer, cantidades por temperatura y notas de milov-app a la tabla Crear Wave del WMS Komodin.",
+  "description": "Agrega ruta/zona, entrega, factura, chofer, cajas y notas de milov-app a la tabla Crear Wave del WMS Komodin.",
   "permissions": ["storage"],
   "host_permissions": [
     "https://milov-web-app.vercel.app/*",
