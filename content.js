@@ -25,10 +25,15 @@
   const state = {
     filters: { ruta: "", zona: "", chofer: "", tipo: "", search: "" },
     lastData: {},
+    planningOptions: null,
+    pendingKomodinAction: null,
   };
 
   let bar = null;
   let processing = false;
+  let planningModal = null;
+  const bypassClickOnce = new WeakSet();
+  const bypassSubmitOnce = new WeakSet();
 
   // --------------------------------------------------------------------------
   // Localización de la tabla
@@ -273,6 +278,7 @@
       <input type="search" data-mlv-search placeholder="Buscar cliente, SO, nota…">
       <button type="button" data-mlv-clear>Limpiar</button>
       <span class="mlv-chip" data-mlv-selection hidden></span>
+      <span class="mlv-plan-hint">Al crear el wave se pedirá fecha y chofer</span>
       <span class="mlv-status" data-mlv-status></span>
       <span class="mlv-error" data-mlv-error hidden></span>
     `;
@@ -381,6 +387,290 @@
     chip.textContent = `${count} seleccionadas · ${fmtQty(total)} cj (${fmtQty(seco)} seco / ${fmtQty(frio)} frío)`;
   }
 
+  function selectedSoNumbers(table = findWaveTable()) {
+    if (!table?.tBodies[0]) return [];
+    const selected = [];
+    for (const row of table.tBodies[0].rows) {
+      const checkbox = row.querySelector('input[type="checkbox"]');
+      if (checkbox?.checked && SO_RE.test(row.dataset.mlvSo || "")) {
+        selected.push(row.dataset.mlvSo);
+      }
+    }
+    return [...new Set(selected)];
+  }
+
+  // --------------------------------------------------------------------------
+  // Planeación del wave: fecha, chofer y ruta opcional
+  // --------------------------------------------------------------------------
+
+  function isWaveCreateAction(element) {
+    if (!element || element.closest(".mlv-modal")) return false;
+    const label = [
+      element.textContent,
+      element.value,
+      element.getAttribute("title"),
+      element.getAttribute("aria-label"),
+    ]
+      .filter(Boolean)
+      .join(" ")
+      .replace(/\s+/g, " ")
+      .trim()
+      .toLowerCase();
+    return /\bwave\b/.test(label) &&
+      /\b(?:crear|generar|guardar|procesar|create|generate|save|new|nuevo)\b/.test(label);
+  }
+
+  function interceptWaveClick(event) {
+    const action = event.target.closest?.('button, input[type="submit"], input[type="button"], a');
+    if (!action || bypassClickOnce.has(action) || !isWaveCreateAction(action)) return;
+
+    const soNumbers = selectedSoNumbers();
+    if (soNumbers.length === 0) return;
+
+    event.preventDefault();
+    event.stopImmediatePropagation();
+    openPlanningModal({ type: "click", target: action, soNumbers }).catch((error) => {
+      console.error("[milov-ext] No se pudo abrir la planeación", error);
+    });
+  }
+
+  function interceptWaveSubmit(event) {
+    const form = event.target;
+    if (!(form instanceof HTMLFormElement) || bypassSubmitOnce.has(form)) return;
+    const submitter = event.submitter;
+    if (!isWaveCreateAction(submitter)) return;
+
+    const soNumbers = selectedSoNumbers();
+    if (soNumbers.length === 0) return;
+
+    event.preventDefault();
+    event.stopImmediatePropagation();
+    openPlanningModal({ type: "submit", form, submitter, soNumbers }).catch((error) => {
+      console.error("[milov-ext] No se pudo abrir la planeación", error);
+    });
+  }
+
+  async function openPlanningModal(pendingAction) {
+    ensurePlanningModal();
+    state.pendingKomodinAction = pendingAction;
+    planningModal.hidden = false;
+    document.documentElement.classList.add("mlv-modal-open");
+
+    planningModal.querySelector("[data-mlv-plan-count]").textContent =
+      `${pendingAction.soNumbers.length} salida${pendingAction.soNumbers.length === 1 ? "" : "s"}`;
+    planningModal.querySelector("[data-mlv-plan-sos]").textContent = pendingAction.soNumbers.join(", ");
+    planningModal.querySelector("[data-mlv-plan-date]").value = suggestedScheduledDate(pendingAction.soNumbers);
+    planningModal.querySelector("[data-mlv-plan-date]").disabled = false;
+    planningModal.querySelector("[data-mlv-plan-driver]").disabled = false;
+    planningModal.querySelector("[data-mlv-plan-error]").hidden = true;
+    planningModal.querySelector("[data-mlv-plan-save]").disabled = true;
+    setPlanningModalStatus("Cargando choferes y rutas…");
+
+    const response = await chrome.runtime.sendMessage({ type: "MLV_PLANNING_OPTIONS" });
+    if (!response?.ok) {
+      showPlanningError(response?.error || "No se pudieron cargar los choferes");
+      setPlanningModalStatus("");
+      return;
+    }
+
+    state.planningOptions = {
+      drivers: Array.isArray(response.drivers) ? response.drivers : [],
+      routes: Array.isArray(response.routes) ? response.routes : [],
+    };
+    renderPlanningOptions();
+    planningModal.querySelector("[data-mlv-plan-save]").disabled = false;
+    setPlanningModalStatus("");
+  }
+
+  function ensurePlanningModal() {
+    if (planningModal && document.contains(planningModal)) return;
+    planningModal = document.createElement("div");
+    planningModal.className = "mlv-modal";
+    planningModal.hidden = true;
+    planningModal.innerHTML = `
+      <div class="mlv-modal-backdrop"></div>
+      <section class="mlv-modal-card" role="dialog" aria-modal="true" aria-labelledby="mlv-plan-title">
+        <div class="mlv-modal-header">
+          <div>
+            <h2 id="mlv-plan-title">Planificar wave en Milov</h2>
+            <p><strong data-mlv-plan-count></strong> quedarán en espera de sus paquetes.</p>
+          </div>
+          <button type="button" class="mlv-modal-close" data-mlv-plan-cancel aria-label="Cerrar">×</button>
+        </div>
+        <div class="mlv-modal-sos" data-mlv-plan-sos></div>
+        <form data-mlv-plan-form>
+          <label>
+            Fecha de salida
+            <input type="date" data-mlv-plan-date required>
+          </label>
+          <label>
+            Chofer
+            <select data-mlv-plan-driver required>
+              <option value="">Seleccionar chofer…</option>
+            </select>
+          </label>
+          <label>
+            Ruta existente (opcional)
+            <select data-mlv-plan-route>
+              <option value="">Crear ruta cuando llegue el primer paquete</option>
+            </select>
+          </label>
+          <p class="mlv-modal-help">Puedes reutilizar una ruta programada o en curso. Al elegirla se usarán su fecha y chofer.</p>
+          <div class="mlv-modal-error" data-mlv-plan-error hidden></div>
+          <div class="mlv-modal-status" data-mlv-plan-status></div>
+          <div class="mlv-modal-actions">
+            <button type="button" data-mlv-plan-cancel>Cancelar</button>
+            <button type="submit" class="mlv-primary" data-mlv-plan-save>Guardar y crear wave</button>
+          </div>
+        </form>
+      </section>
+    `;
+    document.body.appendChild(planningModal);
+
+    for (const button of planningModal.querySelectorAll("[data-mlv-plan-cancel]")) {
+      button.addEventListener("click", closePlanningModal);
+    }
+    planningModal.querySelector(".mlv-modal-backdrop").addEventListener("click", closePlanningModal);
+    planningModal.querySelector("[data-mlv-plan-route]").addEventListener("change", syncRouteSelection);
+    planningModal.querySelector("[data-mlv-plan-form]").addEventListener("submit", saveWavePlan);
+  }
+
+  function renderPlanningOptions() {
+    const driverSelect = planningModal.querySelector("[data-mlv-plan-driver]");
+    const routeSelect = planningModal.querySelector("[data-mlv-plan-route]");
+    driverSelect.innerHTML = '<option value="">Seleccionar chofer…</option>';
+    routeSelect.innerHTML = '<option value="">Crear ruta cuando llegue el primer paquete</option>';
+
+    for (const driver of state.planningOptions.drivers) {
+      const option = document.createElement("option");
+      option.value = driver.id;
+      option.textContent = personName(driver) || "Chofer";
+      driverSelect.appendChild(option);
+    }
+
+    for (const route of state.planningOptions.routes) {
+      const option = document.createElement("option");
+      option.value = route.id;
+      option.textContent = [
+        route.route_number,
+        route.scheduled_date,
+        personName(route.driver) || "sin chofer",
+        route.status === "en_curso" ? "en curso" : "programada",
+        `${Number(route.package_count || 0)} paq.`,
+      ].join(" · ");
+      routeSelect.appendChild(option);
+    }
+  }
+
+  function syncRouteSelection(event) {
+    const routeId = event.target.value;
+    const dateInput = planningModal.querySelector("[data-mlv-plan-date]");
+    const driverSelect = planningModal.querySelector("[data-mlv-plan-driver]");
+    dateInput.disabled = !!routeId;
+    driverSelect.disabled = false;
+    if (!routeId) return;
+    const route = state.planningOptions?.routes.find((item) => item.id === routeId);
+    if (!route) return;
+    dateInput.value = route.scheduled_date || "";
+    if (route.driver_id) {
+      driverSelect.value = route.driver_id;
+      driverSelect.disabled = true;
+    }
+  }
+
+  async function saveWavePlan(event) {
+    event.preventDefault();
+    const pending = state.pendingKomodinAction;
+    if (!pending) return;
+
+    const scheduledDate = planningModal.querySelector("[data-mlv-plan-date]").value;
+    const driverId = planningModal.querySelector("[data-mlv-plan-driver]").value;
+    const routeId = planningModal.querySelector("[data-mlv-plan-route]").value;
+    if (!scheduledDate || !driverId) {
+      showPlanningError("Selecciona la fecha de salida y el chofer.");
+      return;
+    }
+
+    const saveButton = planningModal.querySelector("[data-mlv-plan-save]");
+    saveButton.disabled = true;
+    showPlanningError("");
+    setPlanningModalStatus("Guardando planeación en Milov…");
+
+    try {
+      const response = await chrome.runtime.sendMessage({
+        type: "MLV_PLAN_WAVE",
+        soNumbers: pending.soNumbers,
+        scheduledDate,
+        driverId,
+        routeId: routeId || null,
+      });
+      if (!response?.ok) throw new Error(response?.error || "No se pudo guardar el wave");
+
+      const olaNumber = response.ola?.internal_ola_number || "OLA";
+      closePlanningModal();
+      setBarStatus(`${olaNumber} guardada · continuando en Komodin…`);
+      resumeKomodinAction(pending);
+    } catch (error) {
+      showPlanningError(error instanceof Error ? error.message : String(error));
+      setPlanningModalStatus("");
+      saveButton.disabled = false;
+    }
+  }
+
+  function resumeKomodinAction(pending) {
+    if (pending.type === "click" && document.contains(pending.target)) {
+      bypassClickOnce.add(pending.target);
+      if (pending.target.form) bypassSubmitOnce.add(pending.target.form);
+      pending.target.click();
+      window.setTimeout(() => {
+        bypassClickOnce.delete(pending.target);
+        if (pending.target.form) bypassSubmitOnce.delete(pending.target.form);
+      }, 500);
+      return;
+    }
+    if (pending.type === "submit" && document.contains(pending.form)) {
+      bypassSubmitOnce.add(pending.form);
+      pending.form.requestSubmit(pending.submitter || undefined);
+      window.setTimeout(() => bypassSubmitOnce.delete(pending.form), 500);
+    }
+  }
+
+  function closePlanningModal() {
+    if (!planningModal) return;
+    planningModal.hidden = true;
+    document.documentElement.classList.remove("mlv-modal-open");
+    state.pendingKomodinAction = null;
+  }
+
+  function showPlanningError(message) {
+    const element = planningModal?.querySelector("[data-mlv-plan-error]");
+    if (!element) return;
+    element.textContent = message;
+    element.hidden = !message;
+  }
+
+  function setPlanningModalStatus(message) {
+    const element = planningModal?.querySelector("[data-mlv-plan-status]");
+    if (element) element.textContent = message;
+  }
+
+  function suggestedScheduledDate(soNumbers) {
+    const dates = [...new Set(
+      soNumbers.map((so) => state.lastData[so]?.delivery_date).filter(Boolean)
+    )];
+    if (dates.length === 1) return dates[0];
+    const now = new Date();
+    const year = now.getFullYear();
+    const month = String(now.getMonth() + 1).padStart(2, "0");
+    const day = String(now.getDate()).padStart(2, "0");
+    return `${year}-${month}-${day}`;
+  }
+
+  function personName(person) {
+    if (!person) return "";
+    return [person.first_name, person.last_name].filter(Boolean).join(" ").trim();
+  }
+
   // --------------------------------------------------------------------------
   // Estado / errores
   // --------------------------------------------------------------------------
@@ -443,5 +733,7 @@
 
   const target = document.querySelector("#prop") || document.body;
   new MutationObserver(scheduleProcess).observe(target, { childList: true, subtree: true });
+  document.addEventListener("click", interceptWaveClick, true);
+  document.addEventListener("submit", interceptWaveSubmit, true);
   scheduleProcess();
 })();

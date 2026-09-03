@@ -128,6 +128,11 @@
   margin-left: auto;
 }
 
+.mlv-plan-hint {
+  color: #64748b;
+  font-size: 11px;
+}
+
 .mlv-error {
   display: inline-flex;
   align-items: center;
@@ -137,4 +142,168 @@
   background: #fdecec;
   color: #c62828;
   font-weight: 500;
+}
+
+/* Diálogo previo a la creación del wave */
+
+.mlv-modal[hidden] {
+  display: none !important;
+}
+
+.mlv-modal {
+  position: fixed;
+  inset: 0;
+  z-index: 2147483647;
+  display: grid;
+  place-items: center;
+  padding: 20px;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+}
+
+.mlv-modal-backdrop {
+  position: absolute;
+  inset: 0;
+  background: rgba(15, 23, 42, 0.58);
+  backdrop-filter: blur(2px);
+}
+
+.mlv-modal-card {
+  position: relative;
+  width: min(520px, 100%);
+  max-height: calc(100vh - 40px);
+  overflow: auto;
+  padding: 22px;
+  border-radius: 12px;
+  background: #fff;
+  color: #172033;
+  box-shadow: 0 24px 70px rgba(15, 23, 42, 0.28);
+}
+
+.mlv-modal-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.mlv-modal-header h2 {
+  margin: 0;
+  font-size: 19px;
+  font-weight: 700;
+}
+
+.mlv-modal-header p,
+.mlv-modal-help {
+  margin: 5px 0 0;
+  color: #64748b;
+  font-size: 12px;
+}
+
+.mlv-modal-close {
+  width: 30px;
+  height: 30px;
+  padding: 0;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: #64748b;
+  font-size: 24px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.mlv-modal-close:hover {
+  background: #f1f5f9;
+}
+
+.mlv-modal-sos {
+  max-height: 58px;
+  overflow: auto;
+  margin: 14px 0;
+  padding: 8px 10px;
+  border-radius: 6px;
+  background: #f8fafc;
+  color: #475569;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 11px;
+}
+
+.mlv-modal form {
+  display: grid;
+  gap: 14px;
+}
+
+.mlv-modal form > label {
+  display: grid;
+  gap: 6px;
+  margin: 0;
+  color: #334155;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.mlv-modal input,
+.mlv-modal select {
+  width: 100%;
+  min-height: 38px;
+  padding: 7px 9px;
+  border: 1px solid #cbd5e1;
+  border-radius: 6px;
+  background: #fff;
+  color: #172033;
+  font-size: 13px;
+}
+
+.mlv-modal input:focus,
+.mlv-modal select:focus {
+  border-color: #2563eb;
+  outline: 2px solid rgba(37, 99, 235, 0.15);
+}
+
+.mlv-modal-error {
+  padding: 9px 11px;
+  border-radius: 6px;
+  background: #fef2f2;
+  color: #b91c1c;
+  font-size: 12px;
+}
+
+.mlv-modal-status {
+  min-height: 18px;
+  color: #64748b;
+  font-size: 12px;
+}
+
+.mlv-modal-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  padding-top: 2px;
+}
+
+.mlv-modal-actions button {
+  min-height: 36px;
+  padding: 7px 14px;
+  border: 1px solid #cbd5e1;
+  border-radius: 6px;
+  background: #fff;
+  color: #334155;
+  cursor: pointer;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.mlv-modal-actions button.mlv-primary {
+  border-color: #1d4ed8;
+  background: #1d4ed8;
+  color: #fff;
+}
+
+.mlv-modal-actions button:disabled {
+  cursor: wait;
+  opacity: 0.55;
+}
+
+.mlv-modal-open {
+  overflow: hidden;
 }

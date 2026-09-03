@@ -8,6 +8,8 @@
 
 const DEFAULT_API_BASE = "https://milov-web-app.vercel.app";
 const ENRICH_PATH = "/api/sales-order-planning/enrich";
+const PLANNING_PATH = "/api/sales-order-planning";
+const PLANNING_OPTIONS_PATH = "/api/sales-order-planning/extension-options";
 const CACHE_TTL_MS = 2 * 60 * 1000;
 
 // so_number -> { at: epoch_ms, data: SalesOrderEnrichment | null }
@@ -42,6 +44,26 @@ async function fetchEnrichment(soNumbers, settings) {
 
   const body = await response.json();
   return { ok: true, salesOrders: body.sales_orders || {}, missing: body.missing || [] };
+}
+
+async function apiRequest(path, settings, options = {}) {
+  const response = await fetch(settings.apiBase + path, {
+    method: options.method || "GET",
+    headers: {
+      ...(options.body ? { "Content-Type": "application/json" } : {}),
+      Authorization: `Bearer ${settings.apiKey}`,
+    },
+    ...(options.body ? { body: JSON.stringify(options.body) } : {}),
+  });
+  const body = await response.json().catch(() => ({}));
+
+  if (response.status === 401 || response.status === 403) {
+    return { ok: false, code: "AUTH", error: body.error || "API key inválida o sin permiso para planificar waves" };
+  }
+  if (!response.ok) {
+    return { ok: false, code: "HTTP", error: body.error || `Error ${response.status}` };
+  }
+  return { ok: true, ...body };
 }
 
 async function handleEnrich(soNumbers) {
@@ -92,6 +114,37 @@ async function handleTestConnection(overrides) {
   }
 }
 
+async function handlePlanningOptions() {
+  const settings = await getSettings();
+  if (!settings.apiKey) {
+    return { ok: false, code: "NO_KEY", error: "Configura la API key en las opciones de la extensión." };
+  }
+  return apiRequest(PLANNING_OPTIONS_PATH, settings);
+}
+
+async function handlePlanWave(payload) {
+  const settings = await getSettings();
+  if (!settings.apiKey) {
+    return { ok: false, code: "NO_KEY", error: "Configura la API key en las opciones de la extensión." };
+  }
+
+  const response = await apiRequest(PLANNING_PATH, settings, {
+    method: "POST",
+    body: {
+      sales_order_numbers: Array.isArray(payload?.soNumbers) ? payload.soNumbers : [],
+      scheduled_date: payload?.scheduledDate,
+      driver_id: payload?.driverId,
+      route_id: payload?.routeId || null,
+      notes: "Creada desde Komodin al generar wave",
+    },
+  });
+
+  if (response.ok) {
+    for (const so of payload?.soNumbers || []) cache.delete(so);
+  }
+  return response;
+}
+
 chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   if (message?.type === "MLV_ENRICH") {
     handleEnrich(Array.isArray(message.soNumbers) ? message.soNumbers : [])
@@ -101,6 +154,18 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   }
   if (message?.type === "MLV_TEST_CONNECTION") {
     handleTestConnection(message.overrides).then(sendResponse);
+    return true;
+  }
+  if (message?.type === "MLV_PLANNING_OPTIONS") {
+    handlePlanningOptions()
+      .then(sendResponse)
+      .catch((err) => sendResponse({ ok: false, code: "NETWORK", error: String(err?.message || err) }));
+    return true;
+  }
+  if (message?.type === "MLV_PLAN_WAVE") {
+    handlePlanWave(message)
+      .then(sendResponse)
+      .catch((err) => sendResponse({ ok: false, code: "NETWORK", error: String(err?.message || err) }));
     return true;
   }
   if (message?.type === "MLV_OPEN_OPTIONS") {
