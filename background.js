@@ -85,12 +85,16 @@ async function handleEnrich(soNumbers) {
   }
 
   if (toFetch.length > 0) {
-    const fetched = await fetchEnrichment(toFetch, settings);
-    if (!fetched.ok) return fetched;
-    for (const so of toFetch) {
-      const data = fetched.salesOrders[so] || null;
-      cache.set(so, { at: now, data });
-      if (data) result[so] = data;
+    // La API admite 300 SO por consulta; no cachear como ausentes las restantes.
+    for (let offset = 0; offset < toFetch.length; offset += 300) {
+      const batch = toFetch.slice(offset, offset + 300);
+      const fetched = await fetchEnrichment(batch, settings);
+      if (!fetched.ok) return fetched;
+      for (const so of batch) {
+        const data = fetched.salesOrders[so] || null;
+        cache.set(so, { at: now, data });
+        if (data) result[so] = data;
+      }
     }
   }
 
@@ -134,6 +138,7 @@ async function handlePlanWave(payload) {
       sales_order_numbers: Array.isArray(payload?.soNumbers) ? payload.soNumbers : [],
       scheduled_date: payload?.scheduledDate,
       driver_id: payload?.driverId,
+      vehicle_id: payload?.vehicleId || null,
       route_id: payload?.routeId || null,
       notes: "Creada desde Komodin al generar wave",
     },

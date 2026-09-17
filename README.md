@@ -2,11 +2,12 @@
 
 Extensión de Chrome (Manifest V3) que enriquece la tabla **Crear Wave**
 (`https://milov-wms.komodin.io/wave_new/`) del WMS Komodin con datos de
-milov-app: ruta/zona del cliente, tipo de pedido, fecha de entrega, factura,
+milov-app: ruta/zona del cliente, tipo de pedido, fecha de entrega,
 chofer planificado, cantidades por temperatura (seco / frío-congelado) y notas.
-Agrega además una barra de filtros (Ruta, Zona, Chofer, Tipo Pedido, búsqueda) y
-un resumen de cajas de las salidas seleccionadas. Antes de crear el wave pide
-la fecha de salida y el chofer; opcionalmente permite reutilizar una ruta
+Agrega además filtros de rutas múltiples, zona, chofer, tipo de pedido, fecha
+de entrega (con botón **Mañana**) y búsqueda. Muestra un resumen de cajas y
+la ocupación del vehículo elegido. Antes de crear el wave pide
+la fecha de salida y el chofer; permite elegir un vehículo y reutilizar una ruta
 programada o en curso.
 
 ## Cómo funciona
@@ -28,8 +29,9 @@ programada o en curso.
 ## Requisitos en milov-app
 
 1. Migraciones `20260826180000_extension_api_keys.sql` y
-   `20260903120000_extension_wave_planning.sql` aplicadas.
-2. Endpoint `app/api/sales-order-planning/enrich` desplegado.
+   `20260903120000_extension_wave_planning.sql`, además de
+   `20260917164724_vehicle_wave_capacity.sql`, aplicadas.
+2. Endpoints de enriquecimiento, opciones y planeación desplegados.
 3. Una API key generada:
 
    ```bash
@@ -37,6 +39,31 @@ programada o en curso.
    ```
 
    Para revocar: `--revoke <id>`.
+
+4. Crear vehículos en **Rutas → Vehículos** de milov-app con su capacidad
+   máxima en cajas. Se pueden editar o desactivar sin perder sus asignaciones.
+
+## Filtros, selección y capacidad
+
+- **Ruta** corresponde a `delivery_route` (Zoho `ruta_entrega`); **Zona** a
+  `route` (Zoho `ruta`, sector). Se corrige la presentación sin intercambiar
+  claves ni modificar los datos históricos de clientes.
+- El filtro de entrega usa la fecha del pedido local o, si no existe, la fecha
+  de envío prevista de Zoho. **Mañana** usa el calendario local del navegador.
+- **Seleccionar todo** marca únicamente filas visibles y habilitadas, también
+  con teclado. Cambiar filtros desmarca las filas que quedan ocultas.
+- El vehículo se puede elegir en la barra mientras se seleccionan pedidos o
+  en el diálogo final. **Actualizar vehículos** recarga el catálogo.
+- La barra muestra cajas seleccionadas / capacidad, porcentaje y espacio
+  disponible; amarillo desde 90%, rojo al exceder. Es informativo: el exceso
+  no bloquea el guardado. Si faltan cantidades, el total se indica como parcial.
+- Al reutilizar una ruta se usa su vehículo y se suma la carga existente
+  (paquetes y SO pendientes). El cálculo se limita a esa ruta y esta wave;
+  no suma otros viajes del mismo vehículo.
+- El vehículo se guarda en la OLA y se hereda al crear su ruta. La auditoría
+  de waves en milov-app muestra esa asignación. Las waves sin vehículo siguen
+  siendo compatibles; se puede guardar sin indicador porcentual.
+- La columna **Factura** ya no se agrega a la tabla de Komodin.
 
 ## Instalación (modo desarrollador)
 
@@ -53,6 +80,17 @@ En Opciones se puede apuntar la URL a `http://localhost:3000` (ya está en
 `host_permissions`). Si se usa otro dominio, agregarlo a `host_permissions` en
 `manifest.json` y recargar la extensión.
 
+Pruebas de navegador con una tabla Komodin simulada (sin llamadas a producción):
+
+```bash
+npm ci
+npm test
+```
+
+Requieren Google Chrome instalado. `PLAYWRIGHT_CHANNEL` permite elegir otro
+canal instalado compatible con Playwright. Incluyen filtros combinados,
+selección con teclado, capacidad, guardado y reemplazo de la tabla.
+
 ## Notas / limitaciones
 
 - Filas cuya Reff no es una SO (`ASM-…`, `TO-…`) se muestran sin enriquecer.
@@ -63,9 +101,11 @@ En Opciones se puede apuntar la URL a `http://localhost:3000` (ya está en
 - La API key requiere los scopes `wave_enrich` y `wave_plan`. La migración de
   planeación agrega `wave_plan` a las claves activas que ya tengan
   `wave_enrich`.
+- El enriquecimiento se consulta por lotes de 300 SO; cada wave admite un
+  máximo de 300 SO, conforme a la API de planeación.
 - Para subir a chrome store:
   ```bash
-  zip -r milov-komodin-extension.zip . -x ".git/*" -x ".DS_Store"
+  zip milov-komodin-extension.zip manifest.json background.js content.js content.css options.html options.js
   ```
 
 # Milov-WMS-Chrome-Extension

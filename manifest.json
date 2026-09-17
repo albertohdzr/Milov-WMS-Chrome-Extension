@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Milov — Komodin Wave Enrichment",
-  "version": "0.2.0",
+  "version": "0.3.1",
   "description": "Enriquece Crear Wave y guarda la planeación de fecha, chofer y ruta en milov-app.",
   "permissions": ["storage"],
   "host_permissions": [
