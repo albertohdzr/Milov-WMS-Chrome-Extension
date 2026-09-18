@@ -34,6 +34,7 @@
   let planningModal = null;
   const bypassClickOnce = new WeakSet();
   const bypassSubmitOnce = new WeakSet();
+  const capacityRequests = new WeakMap();
 
   // --------------------------------------------------------------------------
   // Localización de la tabla
@@ -484,6 +485,9 @@
       routes: Array.isArray(response.routes) ? response.routes : [],
       vehicles: Array.isArray(response.vehicles) ? response.vehicles : [],
     };
+    for (const element of [bar.querySelector("[data-mlv-capacity]"), planningModal?.querySelector("[data-mlv-plan-capacity]")]) {
+      if (element) { clearTimeout(capacityRequests.get(element)?.timer); capacityRequests.delete(element); }
+    }
     if (!selectedVehicle()) state.vehicleId = "";
     fillVehicleOptions(bar.querySelector("[data-mlv-vehicle]"), state.vehicleId);
     const table = findWaveTable();
@@ -495,17 +499,24 @@
     const vehicles = [...(state.planningOptions?.vehicles || [])];
     if (routeVehicle && !vehicles.some(vehicle => vehicle.id === routeVehicle.id)) vehicles.push(routeVehicle);
     for (const vehicle of vehicles) {
-      select.appendChild(new Option(`${vehicle.name}${vehicle.plate ? ` · ${vehicle.plate}` : ""} · ${vehicle.capacity_boxes} cajas${vehicle.is_active === false ? " (inactivo)" : ""}`, vehicle.id));
+      const capacity = Number(vehicle.wms_capacity_bins) > 0 ? `${vehicle.wms_capacity_bins} pallets` : Number(vehicle.capacity_boxes) > 0 ? `${vehicle.capacity_boxes} cajas` : "capacidad pendiente";
+      select.appendChild(new Option(`${vehicle.name}${vehicle.plate ? ` · ${vehicle.plate}` : ""} · ${capacity}${vehicle.wms_id ? ` · WMS #${vehicle.wms_id}` : ""}${vehicle.is_active === false ? " (inactivo)" : ""}`, vehicle.id));
     }
     select.value = value || "";
   }
 
-  function renderCapacity(element, vehicle, total, unknown = 0, existing = 0) {
+  function renderCapacity(element, vehicle, total, unknown = 0, existing = 0, routeId = null) {
     if (!element) return;
+    if (vehicle && Number(vehicle.wms_capacity_bins) > 0) {
+      requestPalletCapacity(element, vehicle, total, unknown, routeId);
+      return;
+    }
+    clearTimeout(capacityRequests.get(element)?.timer);
+    capacityRequests.delete(element);
     element.replaceChildren();
     element.dataset.level = "normal";
     if (!vehicle || !(Number(vehicle.capacity_boxes) > 0)) {
-      element.textContent = `${fmtQty(total)} cajas seleccionadas. Selecciona un vehículo para ver su capacidad.${unknown ? ` ${unknown} salidas sin cantidad disponible.` : ""}`;
+      element.textContent = `${fmtQty(total)} cajas seleccionadas. ${vehicle ? "Este vehículo no tiene capacidad configurada." : "Selecciona un vehículo para ver su capacidad."}${unknown ? ` ${unknown} salidas sin cantidad disponible.` : ""}`;
       return;
     }
     const capacity = Number(vehicle.capacity_boxes);
@@ -523,6 +534,57 @@
     if (existing) detail.textContent += ` · Incluye ${fmtQty(existing)} cajas ya asignadas a la ruta`;
     if (unknown) detail.textContent += ` · Total parcial: ${unknown} salidas sin cantidad; ocupación real desconocida`;
     element.append(label, progress, detail);
+  }
+
+  function requestPalletCapacity(element, vehicle, boxes, unknown, routeId) {
+    const soNumbers = element.hasAttribute("data-mlv-plan-capacity")
+      ? state.pendingKomodinAction?.soNumbers || [] : selectedSoNumbers();
+    const key = JSON.stringify([vehicle.id, routeId, soNumbers, boxes, unknown]);
+    const previous = capacityRequests.get(element);
+    if (previous?.key === key) return;
+    clearTimeout(previous?.timer);
+    const request = { key, timer: null };
+    capacityRequests.set(element, request);
+    element.dataset.level = "normal";
+    element.textContent = `${fmtQty(boxes)} cajas · Calculando pallets por producto en Komodin…`;
+    request.timer = setTimeout(async () => {
+      try {
+        const result = await chrome.runtime.sendMessage({ type: "MLV_CAPACITY", soNumbers, vehicleId: vehicle.id, routeId });
+        if (capacityRequests.get(element) !== request) return;
+        if (!result?.ok) throw new Error(result?.error || "No se pudo calcular la ocupación en pallets");
+        const complete = result.complete && !unknown;
+        const load = num(result.total_pallets);
+        const capacity = num(result.capacity_pallets);
+        element.replaceChildren();
+        element.dataset.level = load > capacity ? "exceeded" : !complete || load >= capacity * 0.9 ? "warning" : "normal";
+        const label = document.createElement("strong");
+        label.textContent = `${vehicle.name}: ${fmtQty(load)} / ${fmtQty(capacity)} pallets equivalentes${complete ? ` · ${num(result.percent).toFixed(1)}%` : " · Cálculo incompleto"}`;
+        const detail = document.createElement("span");
+        detail.textContent = `${fmtQty(boxes)} cajas seleccionadas · Estimado según cajas por pallet de cada producto.`;
+        if (num(result.existing_pallets)) detail.textContent += ` Incluye ${fmtQty(num(result.existing_pallets))} pallets de la ruta.`;
+        if (load > capacity) detail.textContent += ` Excede por ${fmtQty(load - capacity)} pallets.`;
+        if (!complete) detail.textContent += " Faltan datos; no se puede confirmar el espacio disponible.";
+        element.append(label);
+        if (complete && capacity > 0) {
+          const progress = document.createElement("progress");
+          progress.max = capacity; progress.value = Math.min(load, capacity);
+          progress.setAttribute("aria-label", `Ocupación estimada de ${vehicle.name}`);
+          element.append(progress);
+        }
+        element.append(detail);
+        if (result.missing?.length) {
+          const missing = document.createElement("span");
+          missing.textContent = result.missing.slice(0, 5).map(item => `${item.sku}: ${item.reason}`).join(" · ");
+          element.append(missing);
+        }
+      } catch (error) {
+        if (capacityRequests.get(element) !== request) return;
+        element.dataset.level = "warning";
+        element.textContent = `${fmtQty(boxes)} cajas · Ocupación sin calcular: ${error.message}`;
+        // A subsequent selection/refresh can retry a transient WMS failure.
+        capacityRequests.delete(element);
+      }
+    }, 350);
   }
 
   function updatePlanningCapacity() {
@@ -547,7 +609,7 @@
       if (item.quantity === null || !Number.isFinite(Number(item.quantity)) || Number(item.quantity) <= 0) unknown += 1;
       else existing += Number(item.quantity);
     }
-    renderCapacity(planningModal.querySelector("[data-mlv-plan-capacity]"), vehicle, total, unknown, existing);
+    renderCapacity(planningModal.querySelector("[data-mlv-plan-capacity]"), vehicle, total, unknown, existing, route?.id || null);
   }
 
   function selectedSoNumbers(table = findWaveTable()) {

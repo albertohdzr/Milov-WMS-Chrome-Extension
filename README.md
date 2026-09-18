@@ -30,8 +30,9 @@ programada o en curso.
 
 1. Migraciones `20260826180000_extension_api_keys.sql` y
    `20260903120000_extension_wave_planning.sql`, además de
-   `20260917164724_vehicle_wave_capacity.sql`, aplicadas.
-2. Endpoints de enriquecimiento, opciones y planeación desplegados.
+   `20260917164724_vehicle_wave_capacity.sql` y
+   `20260917193220_wms_vehicle_sync.sql`, aplicadas.
+2. Endpoints de enriquecimiento, opciones, capacidad y planeación desplegados.
 3. Una API key generada:
 
    ```bash
@@ -40,8 +41,10 @@ programada o en curso.
 
    Para revocar: `--revoke <id>`.
 
-4. Crear vehículos en **Rutas → Vehículos** de milov-app con su capacidad
-   máxima en cajas. Se pueden editar o desactivar sin perder sus asignaciones.
+4. En **Rutas → Vehículos**, pulsar **Sincronizar vehículos del WMS**. La app
+   reutiliza su login de Komodin y guarda capacidad en pallets, bodega y estado.
+   Requiere `rutas:create` y `rutas:edit` con alcance `all`. También permite
+   vehículos manuales con capacidad en cajas.
 
 ## Filtros, selección y capacidad
 
@@ -54,9 +57,18 @@ programada o en curso.
   con teclado. Cambiar filtros desmarca las filas que quedan ocultas.
 - El vehículo se puede elegir en la barra mientras se seleccionan pedidos o
   en el diálogo final. **Actualizar vehículos** recarga el catálogo.
-- La barra muestra cajas seleccionadas / capacidad, porcentaje y espacio
-  disponible; amarillo desde 90%, rojo al exceder. Es informativo: el exceso
-  no bloquea el guardado. Si faltan cantidades, el total se indica como parcial.
+- Para vehículos del WMS, el indicador conserva las cajas seleccionadas y
+  muestra **pallets equivalentes estimados**: suma, por producto, sus cajas
+  divididas entre las cajas por pallet configuradas en Komodin para esa bodega.
+  Por ejemplo, 72 cajas de un producto con 144 CJ/pallet equivalen a 0.5 pallets.
+  La consulta usa `POST /api/sales-order-planning/capacity` con `wave_enrich`.
+- Si faltan reglas, unidades reconocidas como cajas o una bodega coincidente,
+  se muestra **Cálculo incompleto**, sin porcentaje ni barra. Varios tipos de
+  pallet activos para un SKU también impiden decidir la conversión.
+- La estimación no calcula el acomodo físico ni el peso. Las reglas se cachean
+  diez minutos; los vehículos manuales mantienen el indicador en cajas.
+  Amarillo desde 90%, rojo al exceder. Es informativo: no bloquea el guardado
+  por exceso, datos incompletos o ausencia de vehículo.
 - Al reutilizar una ruta se usa su vehículo y se suma la carga existente
   (paquetes y SO pendientes). El cálculo se limita a esa ruta y esta wave;
   no suma otros viajes del mismo vehículo.
@@ -89,7 +101,8 @@ npm test
 
 Requieren Google Chrome instalado. `PLAYWRIGHT_CHANNEL` permite elegir otro
 canal instalado compatible con Playwright. Incluyen filtros combinados,
-selección con teclado, capacidad, guardado y reemplazo de la tabla.
+selección con teclado, capacidad en cajas y pallets, reglas faltantes,
+respuestas tardías, guardado sin vehículo y reemplazo de la tabla.
 
 ## Notas / limitaciones
 

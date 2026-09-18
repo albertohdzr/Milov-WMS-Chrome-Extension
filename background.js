@@ -150,6 +150,15 @@ async function handlePlanWave(payload) {
   return response;
 }
 
+async function handleCapacity(payload) {
+  const settings = await getSettings();
+  if (!settings.apiKey) return { ok: false, code: "NO_KEY", error: "Configura la API key de la extensión." };
+  return apiRequest(`${PLANNING_PATH}/capacity`, settings, {
+    method: "POST",
+    body: { sales_order_numbers: payload.soNumbers || [], vehicle_id: payload.vehicleId, route_id: payload.routeId || null },
+  });
+}
+
 chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   if (message?.type === "MLV_ENRICH") {
     handleEnrich(Array.isArray(message.soNumbers) ? message.soNumbers : [])
@@ -171,6 +180,11 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     handlePlanWave(message)
       .then(sendResponse)
       .catch((err) => sendResponse({ ok: false, code: "NETWORK", error: String(err?.message || err) }));
+    return true;
+  }
+  if (message?.type === "MLV_CAPACITY") {
+    handleCapacity(message).then(sendResponse)
+      .catch((err) => sendResponse({ ok: false, error: String(err?.message || err) }));
     return true;
   }
   if (message?.type === "MLV_OPEN_OPTIONS") {
