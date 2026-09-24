@@ -28,23 +28,23 @@ milov-app y guarda cada wave como una OLA asignada a un camión:
 
 ## Peso y volumen
 
-milov-app calcula la carga de cada SO:
+milov-app calcula la carga de cada SO con los datos de **Komodin**:
 
 | Línea de la SO | Peso |
 | --- | --- |
-| En piezas (PCS, UD) | cantidad × peso de la caja (Zoho) ÷ piezas por caja (WMS) |
+| En piezas (PCS, UD) | cantidad × peso de la caja ÷ piezas por caja |
 | En cajas (CJ, caja) | cantidad × peso de la caja |
 | Por peso (KG, g, lb) | la cantidad ya es el peso |
 
-El volumen usa las medidas de la caja con la misma conversión. Zoho guarda
-peso y medidas de la **caja master** (p. ej. Atún 48×140 g = 8.95 kg) y el WMS
-tiene las piezas por caja en la ficha del producto (Unidad de Medida → CJ).
-milov-app lee esas conversiones cada día (Rutas → Vehículos → **Sincronizar
-piezas por caja del WMS** para hacerlo al momento).
+El peso y las medidas de la ficha de Komodin son de la **caja** (p. ej. Atún
+48×140 g = 8.95 kg; medidas en cm) y las piezas por caja salen de sus factores
+de UoM (UD 1 · CJ 48). milov-app copia ambos reportes ("Listado de Productos" y
+"Factor_UoM_Caja") cada día; en Rutas → Vehículos, **Sincronizar productos de
+Komodin** lo hace al momento.
 
 Si a un producto le falta peso, medidas o conversión, el peso se muestra como
-mínimo (**≥ 120 kg · Parcial**) y el detalle lista qué falta y enlaza al
-producto en milov-app. Nunca se cuenta como cero.
+mínimo (**≥ 120 kg · Parcial**) y el detalle lista qué falta con enlace a la
+ficha del producto en Komodin. Nunca se cuenta como cero.
 
 ## Viajes y capacidad
 
@@ -66,7 +66,8 @@ producto en milov-app. Nunca se cuenta como cero.
 
 ## Requisitos en milov-app
 
-1. Migraciones aplicadas, incluida `20260924120000_vehicle_weight_volume_load.sql`.
+1. Migraciones aplicadas, incluidas `20260924120000_vehicle_weight_volume_load.sql`
+   y `20260925120000_wms_product_logistics.sql`.
 2. Una API key con scopes `wave_enrich` y `wave_plan`:
 
    ```bash
@@ -77,8 +78,8 @@ producto en milov-app. Nunca se cuenta como cero.
 
 3. En **Rutas → Vehículos**: sincronizar vehículos del WMS, configurar el
    **peso máximo** (y opcionalmente el volumen útil) de cada vehículo activo, y
-   sincronizar las piezas por caja. La misma página lista los productos más
-   vendidos a los que les falta algún dato.
+   sincronizar productos de Komodin. La misma página lista los productos más
+   vendidos a los que les falta algún dato en Komodin.
 
 ## Instalación (modo desarrollador)
 

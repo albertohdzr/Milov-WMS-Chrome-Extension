@@ -32,7 +32,7 @@ async function fixture(t, { rows = [1, 2, 3, 4], data = {}, trips = [] } = {}) {
     }]));
     for (const [so, info] of Object.entries(data)) window.data[so] = { ...(window.data[so] || {}), ...info };
     window.options = {
-      ok: true, appBase: 'https://milov.test',
+      ok: true,
       drivers: [{ id: 'd1', first_name: 'Ana', last_name: 'Ruiz' }, { id: 'd2', first_name: 'Luis' }],
       vehicles: [
         { id: 'v1', name: 'Hino 500', plate: 'CA3116', max_weight_kg: 1000, max_volume_m3: 6, is_active: true },
@@ -109,10 +109,10 @@ test('long notes keep line breaks, show three lines and expand on demand', async
 });
 
 test('weight column marks partial loads and explains missing product data', async t => {
-  const page = await fixture(t, { data: { 'SO-1': { load: load(120, { weight_complete: false, missing: [{ sku: 'PS0001006', name: 'Orasi Almendra', quantity: 24, unit: 'PCS', missing: ['weight'], product_id: 'p1' }] }) } } });
+  const page = await fixture(t, { data: { 'SO-1': { load: load(120, { weight_complete: false, missing: [{ sku: 'PS0001006', name: 'Orasi Almendra', quantity: 24, unit: 'PCS', missing: ['weight'], product_id: 'p1', wms_product_id: 'SKU-000123' }] }) } } });
   const cell = page.locator('tbody tr').first().locator('[data-mlv-key="peso"]');
   assert.match(await cell.innerText(), /≥ 120 kg\nParcial/);
-  assert.match(await cell.locator('.mlv-badge').getAttribute('title'), /PS0001006 Orasi Almendra: falta peso/);
+  assert.match(await cell.locator('.mlv-badge').getAttribute('title'), /PS0001006 Orasi Almendra: falta en Komodin peso de caja/);
 });
 
 test('warehouse pickups are labeled, filterable and excluded from truck weight', async t => {

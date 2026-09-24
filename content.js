@@ -31,8 +31,8 @@
   const MISSING_LABELS = {
     product: "producto no encontrado",
     conversion: "piezas por caja",
-    weight: "peso",
-    volume: "medidas",
+    weight: "peso de caja",
+    volume: "medidas de caja",
   };
 
   const state = {
@@ -311,11 +311,14 @@
     return wrap;
   }
 
+  function missingText(item) {
+    if (!item.wms_product_id && item.missing.includes("conversion")) return "sin ficha en Komodin";
+    return `falta en Komodin ${item.missing.map((field) => MISSING_LABELS[field] || field).join(", ")}`;
+  }
+
   function missingSummary(missing = []) {
     if (!missing.length) return "";
-    const lines = missing.slice(0, 6).map((item) =>
-      `${item.sku} ${item.name}: falta ${item.missing.map((field) => MISSING_LABELS[field] || field).join(", ")}`
-    );
+    const lines = missing.slice(0, 6).map((item) => `${item.sku} ${item.name}: ${missingText(item)}`);
     if (missing.length > 6) lines.push(`… y ${missing.length - 6} más`);
     return `Peso mínimo; sin datos completos:\n${lines.join("\n")}`;
   }
@@ -600,7 +603,6 @@
     const response = await chrome.runtime.sendMessage({ type: "MLV_PLANNING_OPTIONS", date });
     if (!response?.ok) throw new Error(response?.error || "No se pudieron cargar vehículos, choferes y viajes");
     const data = {
-      appBase: response.appBase || "",
       drivers: Array.isArray(response.drivers) ? response.drivers : [],
       vehicles: Array.isArray(response.vehicles) ? response.vehicles : [],
       trips: Array.isArray(response.trips) ? response.trips : [],
@@ -1100,14 +1102,14 @@
     const list = document.createElement("ul");
     for (const item of load.missing.slice(0, 15)) {
       const li = document.createElement("li");
-      const what = item.missing.map((field) => MISSING_LABELS[field] || field).join(", ");
-      li.append(text(`${item.sku} · ${item.name} (${fmtQty(item.quantity)} ${item.unit || ""}) — falta ${what} `));
-      if (modal.options?.appBase && item.product_id && (item.missing.includes("weight") || item.missing.includes("volume"))) {
+      li.append(text(`${item.sku} · ${item.name} (${fmtQty(item.quantity)} ${item.unit || ""}) — ${missingText(item)} `));
+      // La extensión corre en Komodin: la ficha se abre en el mismo WMS.
+      if (item.wms_product_id) {
         const link = document.createElement("a");
-        link.href = `${modal.options.appBase}/productos?buscar=${encodeURIComponent(item.sku)}`;
+        link.href = `/products_console/?id=${encodeURIComponent(item.wms_product_id)}`;
         link.target = "_blank";
         link.rel = "noopener";
-        link.textContent = "Completar en Milov";
+        link.textContent = "Abrir ficha";
         li.append(link);
       }
       list.append(li);

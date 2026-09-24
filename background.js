@@ -124,9 +124,7 @@ async function handlePlanningOptions(date) {
     return { ok: false, code: "NO_KEY", error: "Configura la API key en las opciones de la extensión." };
   }
   const query = /^\d{4}-\d{2}-\d{2}$/.test(date || "") ? `?date=${date}` : "";
-  const response = await apiRequest(PLANNING_OPTIONS_PATH + query, settings);
-  // La URL de milov-app permite enlazar a los productos con datos faltantes.
-  return response.ok ? { ...response, appBase: settings.apiBase } : response;
+  return apiRequest(PLANNING_OPTIONS_PATH + query, settings);
 }
 
 async function handlePlanWave(payload) {
