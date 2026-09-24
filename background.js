@@ -118,12 +118,15 @@ async function handleTestConnection(overrides) {
   }
 }
 
-async function handlePlanningOptions() {
+async function handlePlanningOptions(date) {
   const settings = await getSettings();
   if (!settings.apiKey) {
     return { ok: false, code: "NO_KEY", error: "Configura la API key en las opciones de la extensión." };
   }
-  return apiRequest(PLANNING_OPTIONS_PATH, settings);
+  const query = /^\d{4}-\d{2}-\d{2}$/.test(date || "") ? `?date=${date}` : "";
+  const response = await apiRequest(PLANNING_OPTIONS_PATH + query, settings);
+  // La URL de milov-app permite enlazar a los productos con datos faltantes.
+  return response.ok ? { ...response, appBase: settings.apiBase } : response;
 }
 
 async function handlePlanWave(payload) {
@@ -137,9 +140,11 @@ async function handlePlanWave(payload) {
     body: {
       sales_order_numbers: Array.isArray(payload?.soNumbers) ? payload.soNumbers : [],
       scheduled_date: payload?.scheduledDate,
-      driver_id: payload?.driverId,
+      driver_id: payload?.driverId || null,
       vehicle_id: payload?.vehicleId || null,
       route_id: payload?.routeId || null,
+      ola_id: payload?.olaId || null,
+      confirm_over_capacity: payload?.confirmOverCapacity === true,
       notes: "Creada desde Komodin al generar wave",
     },
   });
@@ -148,15 +153,6 @@ async function handlePlanWave(payload) {
     for (const so of payload?.soNumbers || []) cache.delete(so);
   }
   return response;
-}
-
-async function handleCapacity(payload) {
-  const settings = await getSettings();
-  if (!settings.apiKey) return { ok: false, code: "NO_KEY", error: "Configura la API key de la extensión." };
-  return apiRequest(`${PLANNING_PATH}/capacity`, settings, {
-    method: "POST",
-    body: { sales_order_numbers: payload.soNumbers || [], vehicle_id: payload.vehicleId, route_id: payload.routeId || null },
-  });
 }
 
 chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
@@ -171,7 +167,7 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     return true;
   }
   if (message?.type === "MLV_PLANNING_OPTIONS") {
-    handlePlanningOptions()
+    handlePlanningOptions(message.date)
       .then(sendResponse)
       .catch((err) => sendResponse({ ok: false, code: "NETWORK", error: String(err?.message || err) }));
     return true;
@@ -180,11 +176,6 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     handlePlanWave(message)
       .then(sendResponse)
       .catch((err) => sendResponse({ ok: false, code: "NETWORK", error: String(err?.message || err) }));
-    return true;
-  }
-  if (message?.type === "MLV_CAPACITY") {
-    handleCapacity(message).then(sendResponse)
-      .catch((err) => sendResponse({ ok: false, error: String(err?.message || err) }));
     return true;
   }
   if (message?.type === "MLV_OPEN_OPTIONS") {

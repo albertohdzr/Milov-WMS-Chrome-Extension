@@ -1,40 +1,54 @@
 // ============================================================================
-// Content script — inyección de columnas Milov en la tabla Crear Wave.
+// Content script — columnas Milov, filtros y planeación del wave en Komodin.
 //
 // La tabla del WMS es HTML plano insertado por jQuery dentro de #prop tras
 // "Aplicar Filtros" (POST /wave_new_ajax/). Cada re-render reemplaza el HTML,
 // así que un MutationObserver reprocesa la tabla nueva. La columna "Reff"
 // trae el número de SO, que es la llave contra milov-app.
+//
+// Carga de camiones: milov-app calcula peso y volumen por SO (peso de caja de
+// Zoho ÷ piezas por caja del WMS) y entrega los viajes del día con su carga.
+// Aquí solo se suman esas cargas para mostrar la ocupación al instante; el
+// servidor vuelve a validar al guardar.
 // ============================================================================
 
 (() => {
   const SO_RE = /^SO-\d+$/;
+  const OPTIONS_TTL_MS = 60 * 1000;
 
   const ADDED_COLUMNS = [
     { key: "ruta", label: "Ruta / Zona" },
-    { key: "tipo", label: "Tipo Pedido" },
+    { key: "tipo", label: "Tipo" },
     { key: "entrega", label: "Fecha Ent." },
-    { key: "chofer", label: "Chofer" },
-    { key: "seco", label: "Cj. Seco", numeric: true },
-    { key: "frio", label: "Cj. Frío/Cong", numeric: true },
-    { key: "total", label: "Total Cj.", numeric: true },
+    { key: "chofer", label: "Chofer / OLA" },
+    { key: "cajas", label: "Cantidad", numeric: true },
+    { key: "peso", label: "Peso", numeric: true },
     { key: "notas", label: "Notas" },
   ];
+
+  const PICKUP_LABEL = "Retiro en bodega";
+  const DELIVERY_LABEL = "Reparto";
+  const MISSING_LABELS = {
+    product: "producto no encontrado",
+    conversion: "piezas por caja",
+    weight: "peso",
+    volume: "medidas",
+  };
 
   const state = {
     filters: { rutas: [], zona: "", chofer: "", tipo: "", entrega: "", search: "" },
     lastData: {},
-    planningOptions: null,
-    vehicleId: "",
+    optionsByDate: new Map(),
+    trucksDate: "",
     pendingKomodinAction: null,
   };
 
   let bar = null;
   let processing = false;
   let planningModal = null;
+  let modal = null;
   const bypassClickOnce = new WeakSet();
   const bypassSubmitOnce = new WeakSet();
-  const capacityRequests = new WeakMap();
 
   // --------------------------------------------------------------------------
   // Localización de la tabla
@@ -77,9 +91,6 @@
 
     try {
       ensureBar(table);
-      if (!state.planningOptions) void loadPlanningOptions().catch((error) => {
-        bar.querySelector("[data-mlv-capacity]").textContent = `Capacidad no disponible: ${error.message}`;
-      });
       setBarStatus("Cargando datos Milov…");
 
       const rows = [...table.tBodies[0].rows];
@@ -95,17 +106,14 @@
       state.lastData = {};
 
       if (soNumbers.length === 0) {
-        fillRows(table, soIndex, {});
+        fillRows(table, {});
         rebuildFilterOptions({});
         applyFilters(table);
         setBarStatus("Sin SOs en la tabla");
         return;
       }
 
-      const response = await chrome.runtime.sendMessage({
-        type: "MLV_ENRICH",
-        soNumbers,
-      });
+      const response = await chrome.runtime.sendMessage({ type: "MLV_ENRICH", soNumbers });
 
       if (!response || !response.ok) {
         showError(response);
@@ -114,10 +122,9 @@
 
       hideError();
       state.lastData = response.salesOrders || {};
-      fillRows(table, soIndex, state.lastData);
+      fillRows(table, state.lastData);
       rebuildFilterOptions(state.lastData);
       applyFilters(table);
-      updateSelectionSummary(table);
     } finally {
       processing = false;
       if (findWaveTable() !== table) scheduleProcess();
@@ -150,7 +157,7 @@
     }
   }
 
-  function fillRows(table, soIndex, data) {
+  function fillRows(table, data) {
     for (const row of table.tBodies[0].rows) {
       const so = row.dataset.mlvSo;
       const info = so ? data[so] : null;
@@ -160,7 +167,7 @@
       }
       if (!cells.ruta) continue;
       if (!info) {
-        for (const key of Object.keys(cells)) cells[key].innerHTML = '<span class="mlv-dim">—</span>';
+        for (const key of Object.keys(cells)) cells[key].replaceChildren(dim("—"));
         setRowFilterData(row, null);
         continue;
       }
@@ -168,48 +175,40 @@
       // Zoho ruta_entrega es la ruta; ruta (sector) es la zona.
       const ruta = info.delivery_route?.name || "";
       const zona = info.route?.name || "";
-      cells.ruta.innerHTML = "";
-      cells.ruta.appendChild(stacked(ruta || "Sin ruta", zona || "Sin zona"));
+      cells.ruta.replaceChildren(stacked(ruta || "Sin ruta", zona || "Sin zona"));
 
-      const tipo =
-        info.pickup_at_warehouse === true ? "Retira Bod." :
-        info.pickup_at_warehouse === false ? "Puerta" : "—";
-      cells.tipo.textContent = tipo;
+      const tipo = tipoLabel(info);
+      cells.tipo.replaceChildren(
+        info.pickup_at_warehouse === true ? badge(PICKUP_LABEL, "amber") :
+        info.pickup_at_warehouse === false ? text(DELIVERY_LABEL) : dim("—")
+      );
 
-      cells.entrega.innerHTML = "";
-      cells.entrega.appendChild(deliveryCell(info));
+      cells.entrega.replaceChildren(deliveryCell(info));
 
-      const chofer = info.driver_name || (info.pickup_at_warehouse ? "Cliente Retira" : null);
-      if (chofer) {
-        cells.chofer.textContent = chofer;
-      } else {
-        cells.chofer.innerHTML = '<span class="mlv-dim">Sin asignar</span>';
-      }
+      const chofer = choferLabel(info);
+      const olaDetail = [info.ola?.number, info.ola?.vehicle_name].filter(Boolean).join(" · ");
+      cells.chofer.replaceChildren(chofer ? stacked(chofer, olaDetail, !olaDetail) : dim("Sin asignar"));
 
       const dry = num(info.quantities?.dry);
       const cold = num(info.quantities?.cold) + num(info.quantities?.frozen);
       const total = num(info.quantities?.total);
-      cells.seco.textContent = fmtQty(dry);
-      cells.frio.textContent = fmtQty(cold);
-      cells.total.textContent = fmtQty(total);
-      cells.total.classList.add("mlv-strong");
+      cells.cajas.replaceChildren(stacked(fmtQty(total), cold ? `${fmtQty(dry)} seco · ${fmtQty(cold)} frío` : "", !cold));
 
-      cells.notas.innerHTML = "";
-      if (info.notes) {
-        const span = document.createElement("span");
-        span.className = "mlv-notes";
-        span.textContent = info.notes;
-        span.title = info.notes;
-        cells.notas.appendChild(span);
-      } else {
-        cells.notas.innerHTML = '<span class="mlv-dim">—</span>';
-      }
+      cells.peso.replaceChildren(weightCell(info.load));
+      cells.notas.replaceChildren(notesCell(info.notes));
 
-      row.dataset.mlvSeco = String(dry);
-      row.dataset.mlvFrio = String(cold);
       row.dataset.mlvTotal = String(total);
       setRowFilterData(row, { ruta, zona, chofer: chofer || "", tipo, entrega: info.delivery_date });
     }
+  }
+
+  function tipoLabel(info) {
+    return info.pickup_at_warehouse === true ? PICKUP_LABEL :
+      info.pickup_at_warehouse === false ? DELIVERY_LABEL : "";
+  }
+
+  function choferLabel(info) {
+    return info.driver_name || (info.pickup_at_warehouse ? "Retira cliente" : null);
   }
 
   function setRowFilterData(row, values) {
@@ -221,15 +220,37 @@
     row.dataset.mlvSearch = (row.textContent || "").toLowerCase();
   }
 
-  function stacked(top, bottom) {
+  function text(value) {
+    return document.createTextNode(value);
+  }
+
+  function dim(value) {
+    const span = document.createElement("span");
+    span.className = "mlv-dim";
+    span.textContent = value;
+    return span;
+  }
+
+  function badge(label, tone, title) {
+    const span = document.createElement("span");
+    span.className = `mlv-badge mlv-badge-${tone}`;
+    span.textContent = label;
+    if (title) span.title = title;
+    return span;
+  }
+
+  function stacked(top, bottom, hideBottom = false) {
     const wrap = document.createElement("div");
     const a = document.createElement("div");
     a.className = "mlv-strong";
     a.textContent = top;
-    const b = document.createElement("div");
-    b.className = "mlv-dim";
-    b.textContent = bottom;
-    wrap.append(a, b);
+    wrap.append(a);
+    if (!hideBottom && bottom) {
+      const b = document.createElement("div");
+      b.className = "mlv-dim mlv-small";
+      b.textContent = bottom;
+      wrap.append(b);
+    }
     return wrap;
   }
 
@@ -242,17 +263,65 @@
 
     const olaDate = info.ola?.scheduled_date;
     if (info.delivery_date && olaDate && olaDate !== info.delivery_date) {
-      const badge = document.createElement("span");
-      badge.className = "mlv-badge mlv-badge-red";
-      badge.textContent = "Difiere";
-      badge.title = `OLA planificada para ${olaDate}, entrega pedida ${info.delivery_date}`;
-      wrap.appendChild(badge);
+      wrap.appendChild(badge("Difiere", "red", `OLA planificada para ${olaDate}, entrega pedida ${info.delivery_date}`));
     }
     return wrap;
   }
 
+  function weightCell(load) {
+    if (!load) return dim("—");
+    const wrap = document.createElement("div");
+    const kg = document.createElement("div");
+    kg.className = "mlv-strong";
+    kg.textContent = `${load.weight_complete ? "" : "≥ "}${fmtKg(load.weight_kg)}`;
+    wrap.append(kg);
+    if (!load.weight_complete) {
+      wrap.append(badge("Parcial", "amber", missingSummary(load.missing)));
+    } else if (num(load.volume_m3)) {
+      const m3 = document.createElement("div");
+      m3.className = "mlv-dim mlv-small";
+      m3.textContent = fmtM3(load.volume_m3);
+      wrap.append(m3);
+    }
+    return wrap;
+  }
+
+  function notesCell(notes) {
+    if (!notes) return dim("—");
+    const wrap = document.createElement("div");
+    wrap.className = "mlv-notes";
+    const body = document.createElement("div");
+    body.className = "mlv-notes-text";
+    body.textContent = notes;
+    wrap.append(body);
+    // Notas largas o con saltos de línea: se muestran en 3 líneas y se expanden.
+    if (notes.length > 90 || /\n/.test(notes)) {
+      const toggle = document.createElement("button");
+      toggle.type = "button";
+      toggle.className = "mlv-link";
+      toggle.textContent = "Ver más";
+      toggle.addEventListener("click", (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        const open = wrap.classList.toggle("mlv-notes-open");
+        toggle.textContent = open ? "Ver menos" : "Ver más";
+      });
+      wrap.append(toggle);
+    }
+    return wrap;
+  }
+
+  function missingSummary(missing = []) {
+    if (!missing.length) return "";
+    const lines = missing.slice(0, 6).map((item) =>
+      `${item.sku} ${item.name}: falta ${item.missing.map((field) => MISSING_LABELS[field] || field).join(", ")}`
+    );
+    if (missing.length > 6) lines.push(`… y ${missing.length - 6} más`);
+    return `Peso mínimo; sin datos completos:\n${lines.join("\n")}`;
+  }
+
   // --------------------------------------------------------------------------
-  // Barra de filtros + resumen de selección
+  // Barra de filtros + resumen de selección + peso por camión
   // --------------------------------------------------------------------------
 
   function ensureBar(table) {
@@ -260,41 +329,51 @@
     bar = document.createElement("div");
     bar.className = "mlv-bar";
     bar.innerHTML = `
-      <div class="mlv-bar-title">Milov</div>
-      <details class="mlv-route-filter">
-        <summary data-mlv-routes-label>Rutas: Todas</summary>
-        <div class="mlv-route-options" data-mlv-routes></div>
-      </details>
-      <label>Zona <select data-mlv-filter="zona"><option value="">Todas</option></select></label>
-      <label>Chofer <select data-mlv-filter="chofer"><option value="">Cualquiera</option></select></label>
-      <label>Tipo Pedido <select data-mlv-filter="tipo"><option value="">Todos</option></select></label>
-      <label>Entrega <input type="date" data-mlv-filter="entrega"></label>
-      <button type="button" data-mlv-tomorrow>Mañana</button>
-      <input type="search" data-mlv-search placeholder="Buscar cliente, SO, nota…">
-      <button type="button" data-mlv-clear>Limpiar</button>
-      <span class="mlv-chip" data-mlv-selection hidden></span>
-      <label>Vehículo <select data-mlv-vehicle><option value="">Seleccionar vehículo…</option></select></label>
-      <button type="button" data-mlv-reload-vehicles>Actualizar vehículos</button>
-      <div class="mlv-capacity" data-mlv-capacity aria-live="polite">Selecciona un vehículo para ver su capacidad.</div>
-      <span class="mlv-plan-hint">Al crear el wave se pedirá fecha y chofer</span>
-      <span class="mlv-plan-hint">Seleccionar todo aplica a las salidas visibles. Al filtrar se desmarcan las ocultas.</span>
-      <span class="mlv-status" data-mlv-status></span>
-      <span class="mlv-error" data-mlv-error hidden></span>
+      <div class="mlv-bar-row">
+        <div class="mlv-bar-title">Milov</div>
+        <details class="mlv-route-filter">
+          <summary data-mlv-routes-label>Rutas: Todas</summary>
+          <div class="mlv-route-options" data-mlv-routes></div>
+        </details>
+        <label>Zona <select data-mlv-filter="zona"><option value="">Todas</option></select></label>
+        <label>Chofer <select data-mlv-filter="chofer"><option value="">Cualquiera</option></select></label>
+        <label>Tipo <select data-mlv-filter="tipo"><option value="">Todos</option></select></label>
+        <label>Entrega <input type="date" data-mlv-filter="entrega"></label>
+        <button type="button" data-mlv-tomorrow>Mañana</button>
+        <input type="search" data-mlv-search placeholder="Buscar cliente, SO, nota…">
+        <button type="button" data-mlv-clear>Limpiar</button>
+        <span class="mlv-status" data-mlv-status></span>
+      </div>
+      <div class="mlv-bar-row">
+        <span class="mlv-selection" data-mlv-selection>Selecciona salidas para ver su peso.</span>
+        <button type="button" class="mlv-trucks-toggle" data-mlv-trucks-toggle aria-expanded="false">Peso por camión</button>
+        <span class="mlv-plan-hint">Al crear el wave eliges el camión y el chofer. Seleccionar todo aplica solo a las salidas visibles.</span>
+        <span class="mlv-error" data-mlv-error hidden></span>
+      </div>
+      <section class="mlv-trucks" data-mlv-trucks hidden>
+        <div class="mlv-trucks-head">
+          <strong>Carga por camión</strong>
+          <label>Fecha <input type="date" data-mlv-trucks-date></label>
+          <button type="button" data-mlv-trucks-refresh>Actualizar</button>
+          <span class="mlv-dim" data-mlv-trucks-status></span>
+        </div>
+        <div class="mlv-trucks-list" data-mlv-trucks-list></div>
+      </section>
     `;
 
     const anchor = table.closest("#prop") || table.parentElement;
     anchor.parentElement.insertBefore(bar, anchor);
-    bar.querySelector("[data-mlv-vehicle]").addEventListener("change", (event) => {
-      state.vehicleId = event.target.value;
-      const current = findWaveTable();
-      if (current) updateSelectionSummary(current);
-    });
-    bar.querySelector("[data-mlv-reload-vehicles]").addEventListener("click", async (event) => {
-      const button = event.target;
-      button.disabled = true;
-      try { await loadPlanningOptions(); }
-      catch (error) { bar.querySelector("[data-mlv-capacity]").textContent = `Capacidad no disponible: ${error.message}`; }
-      finally { button.disabled = false; }
+
+    const routeFilter = bar.querySelector(".mlv-route-filter");
+    // El listado de rutas se cierra al hacer clic fuera o con Escape.
+    document.addEventListener("click", (event) => {
+      if (routeFilter.open && !routeFilter.contains(event.target)) routeFilter.open = false;
+    }, true);
+    routeFilter.addEventListener("keydown", (event) => {
+      if (event.key === "Escape" && routeFilter.open) {
+        routeFilter.open = false;
+        routeFilter.querySelector("summary").focus();
+      }
     });
 
     bar.addEventListener("change", (event) => {
@@ -326,19 +405,31 @@
       if (current) applyFilters(current);
     });
     bar.querySelector("[data-mlv-tomorrow]").addEventListener("click", () => {
-      const tomorrow = new Date();
-      tomorrow.setDate(tomorrow.getDate() + 1);
-      state.filters.entrega = localDate(tomorrow);
+      state.filters.entrega = tomorrowDate();
       bar.querySelector('[data-mlv-filter="entrega"]').value = state.filters.entrega;
       const current = findWaveTable();
       if (current) applyFilters(current);
     });
+
+    const trucksToggle = bar.querySelector("[data-mlv-trucks-toggle]");
+    trucksToggle.addEventListener("click", () => {
+      const panel = bar.querySelector("[data-mlv-trucks]");
+      panel.hidden = !panel.hidden;
+      trucksToggle.setAttribute("aria-expanded", String(!panel.hidden));
+      if (!panel.hidden) {
+        const input = bar.querySelector("[data-mlv-trucks-date]");
+        if (!input.value) input.value = state.filters.entrega || tomorrowDate();
+        void renderTrucks(false);
+      }
+    });
+    bar.querySelector("[data-mlv-trucks-date]").addEventListener("change", () => void renderTrucks(false));
+    bar.querySelector("[data-mlv-trucks-refresh]").addEventListener("click", () => void renderTrucks(true));
   }
 
   function updateRoutesLabel() {
     const routes = state.filters.rutas;
     bar.querySelector("[data-mlv-routes-label]").textContent =
-      routes.length ? `Rutas: ${routes.join(", ")}` : "Rutas: Todas";
+      routes.length ? `Rutas (${routes.length}): ${routes.join(", ")}` : "Rutas: Todas";
   }
 
   function rebuildFilterOptions(data) {
@@ -347,10 +438,10 @@
     for (const info of Object.values(data)) {
       if (info.delivery_route?.name) values.ruta.add(info.delivery_route.name);
       if (info.route?.name) values.zona.add(info.route.name);
-      const chofer = info.driver_name || (info.pickup_at_warehouse ? "Cliente Retira" : null);
+      const chofer = choferLabel(info);
       if (chofer) values.chofer.add(chofer);
-      if (info.pickup_at_warehouse === true) values.tipo.add("Retira Bod.");
-      if (info.pickup_at_warehouse === false) values.tipo.add("Puerta");
+      const tipo = tipoLabel(info);
+      if (tipo) values.tipo.add(tipo);
     }
 
     for (const [key, set] of Object.entries(values)) {
@@ -375,10 +466,7 @@
       const previous = state.filters[key];
       while (select.options.length > 1) select.remove(1);
       for (const value of [...set].sort((a, b) => a.localeCompare(b))) {
-        const option = document.createElement("option");
-        option.value = value;
-        option.textContent = value;
-        select.appendChild(option);
+        select.appendChild(new Option(value, value));
       }
       select.value = [...set].includes(previous) ? previous : "";
       state.filters[key] = select.value;
@@ -440,192 +528,204 @@
     });
   }
 
+  /** Selección actual separada en reparto y retiro en bodega, con su carga. */
+  function selectionBreakdown(table = findWaveTable()) {
+    const result = { count: 0, boxes: 0, deliveries: [], pickups: [], unknown: 0, load: null };
+    if (!table?.tBodies[0]) return { ...result, load: combineLoads([]) };
+    const loads = [];
+    for (const row of table.tBodies[0].rows) {
+      const checkbox = row.querySelector('input[type="checkbox"]');
+      if (!checkbox?.checked) continue;
+      result.count += 1;
+      result.boxes += Number(row.dataset.mlvTotal || 0);
+      const so = row.dataset.mlvSo;
+      const info = so ? state.lastData[so] : null;
+      if (!info) {
+        // Transferencias/ensambles de Komodin o SO sin datos Milov: peso desconocido.
+        result.unknown += 1;
+        loads.push(null);
+        continue;
+      }
+      if (info.pickup_at_warehouse === true) {
+        result.pickups.push(so);
+        continue;
+      }
+      result.deliveries.push(so);
+      loads.push(info.load || null);
+    }
+    result.load = combineLoads(loads);
+    return result;
+  }
+
   function updateSelectionSummary(table) {
     if (!bar || !table.tBodies[0]) return;
-    const chip = bar.querySelector("[data-mlv-selection]");
-    let count = 0;
-    let seco = 0;
-    let frio = 0;
-    let total = 0;
-    let unknown = 0;
     const visibleCheckboxes = [];
     for (const row of table.tBodies[0].rows) {
       const checkbox = row.querySelector('input[type="checkbox"]');
       if (checkbox && !checkbox.disabled && isRowVisible(row)) visibleCheckboxes.push(checkbox);
-      if (!checkbox || !checkbox.checked) continue;
-      count += 1;
-      if (!state.lastData[row.dataset.mlvSo] || !(Number(row.dataset.mlvTotal) > 0)) unknown += 1;
-      seco += Number(row.dataset.mlvSeco || 0);
-      frio += Number(row.dataset.mlvFrio || 0);
-      total += Number(row.dataset.mlvTotal || 0);
     }
     for (const checkbox of table.tHead?.querySelectorAll('input[type="checkbox"]') || []) {
       const checked = visibleCheckboxes.filter((input) => input.checked).length;
       checkbox.checked = visibleCheckboxes.length > 0 && checked === visibleCheckboxes.length;
       checkbox.indeterminate = checked > 0 && checked < visibleCheckboxes.length;
     }
-    renderCapacity(bar.querySelector("[data-mlv-capacity]"), selectedVehicle(), total, unknown);
-    if (count === 0) {
-      chip.hidden = true;
+
+    const chip = bar.querySelector("[data-mlv-selection]");
+    const selection = selectionBreakdown(table);
+    chip.classList.toggle("mlv-selection-active", selection.count > 0);
+    if (selection.count === 0) {
+      chip.textContent = "Selecciona salidas para ver su peso.";
+      chip.title = "";
       return;
     }
-    chip.hidden = false;
-    chip.textContent = `${count} seleccionadas · ${fmtQty(total)} cj (${fmtQty(seco)} seco / ${fmtQty(frio)} frío)`;
-  }
-
-  function selectedVehicle(id = state.vehicleId) {
-    return state.planningOptions?.vehicles.find((vehicle) => vehicle.id === id);
-  }
-
-  async function loadPlanningOptions() {
-    const response = await chrome.runtime.sendMessage({ type: "MLV_PLANNING_OPTIONS" });
-    if (!response?.ok) throw new Error(response?.error || "No se pudieron cargar vehículos y choferes");
-    state.planningOptions = {
-      drivers: Array.isArray(response.drivers) ? response.drivers : [],
-      routes: Array.isArray(response.routes) ? response.routes : [],
-      vehicles: Array.isArray(response.vehicles) ? response.vehicles : [],
-    };
-    for (const element of [bar.querySelector("[data-mlv-capacity]"), planningModal?.querySelector("[data-mlv-plan-capacity]")]) {
-      if (element) { clearTimeout(capacityRequests.get(element)?.timer); capacityRequests.delete(element); }
-    }
-    if (!selectedVehicle()) state.vehicleId = "";
-    fillVehicleOptions(bar.querySelector("[data-mlv-vehicle]"), state.vehicleId);
-    const table = findWaveTable();
-    if (table) updateSelectionSummary(table);
-  }
-
-  function fillVehicleOptions(select, value, routeVehicle) {
-    select.replaceChildren(new Option("Sin vehículo seleccionado", ""));
-    const vehicles = [...(state.planningOptions?.vehicles || [])];
-    if (routeVehicle && !vehicles.some(vehicle => vehicle.id === routeVehicle.id)) vehicles.push(routeVehicle);
-    for (const vehicle of vehicles) {
-      const capacity = Number(vehicle.wms_capacity_bins) > 0 ? `${vehicle.wms_capacity_bins} pallets` : Number(vehicle.capacity_boxes) > 0 ? `${vehicle.capacity_boxes} cajas` : "capacidad pendiente";
-      select.appendChild(new Option(`${vehicle.name}${vehicle.plate ? ` · ${vehicle.plate}` : ""} · ${capacity}${vehicle.wms_id ? ` · WMS #${vehicle.wms_id}` : ""}${vehicle.is_active === false ? " (inactivo)" : ""}`, vehicle.id));
-    }
-    select.value = value || "";
-  }
-
-  function renderCapacity(element, vehicle, total, unknown = 0, existing = 0, routeId = null) {
-    if (!element) return;
-    if (vehicle && Number(vehicle.wms_capacity_bins) > 0) {
-      requestPalletCapacity(element, vehicle, total, unknown, routeId);
-      return;
-    }
-    clearTimeout(capacityRequests.get(element)?.timer);
-    capacityRequests.delete(element);
-    element.replaceChildren();
-    element.dataset.level = "normal";
-    if (!vehicle || !(Number(vehicle.capacity_boxes) > 0)) {
-      element.textContent = `${fmtQty(total)} cajas seleccionadas. ${vehicle ? "Este vehículo no tiene capacidad configurada." : "Selecciona un vehículo para ver su capacidad."}${unknown ? ` ${unknown} salidas sin cantidad disponible.` : ""}`;
-      return;
-    }
-    const capacity = Number(vehicle.capacity_boxes);
-    const load = total + existing;
-    const percent = load / capacity * 100;
-    element.dataset.level = load > capacity ? "exceeded" : unknown || load >= capacity * 0.9 ? "warning" : "normal";
-    const label = document.createElement("strong");
-    label.textContent = `${vehicle.name}: ${fmtQty(load)} / ${fmtQty(capacity)} cajas · ${percent.toFixed(1)}%`;
-    const progress = document.createElement("progress");
-    progress.max = capacity;
-    progress.value = Math.min(load, capacity);
-    progress.setAttribute("aria-label", `Ocupación de ${vehicle.name}`);
-    const detail = document.createElement("span");
-    detail.textContent = load > capacity ? `Excede por ${fmtQty(load - capacity)} cajas` : load === capacity ? "Capacidad máxima alcanzada" : `${fmtQty(capacity - load)} cajas disponibles`;
-    if (existing) detail.textContent += ` · Incluye ${fmtQty(existing)} cajas ya asignadas a la ruta`;
-    if (unknown) detail.textContent += ` · Total parcial: ${unknown} salidas sin cantidad; ocupación real desconocida`;
-    element.append(label, progress, detail);
-  }
-
-  function requestPalletCapacity(element, vehicle, boxes, unknown, routeId) {
-    const soNumbers = element.hasAttribute("data-mlv-plan-capacity")
-      ? state.pendingKomodinAction?.soNumbers || [] : selectedSoNumbers();
-    const key = JSON.stringify([vehicle.id, routeId, soNumbers, boxes, unknown]);
-    const previous = capacityRequests.get(element);
-    if (previous?.key === key) return;
-    clearTimeout(previous?.timer);
-    const request = { key, timer: null };
-    capacityRequests.set(element, request);
-    element.dataset.level = "normal";
-    element.textContent = `${fmtQty(boxes)} cajas · Calculando pallets por producto en Komodin…`;
-    request.timer = setTimeout(async () => {
-      try {
-        const result = await chrome.runtime.sendMessage({ type: "MLV_CAPACITY", soNumbers, vehicleId: vehicle.id, routeId });
-        if (capacityRequests.get(element) !== request) return;
-        if (!result?.ok) throw new Error(result?.error || "No se pudo calcular la ocupación en pallets");
-        const complete = result.complete && !unknown;
-        const load = num(result.total_pallets);
-        const capacity = num(result.capacity_pallets);
-        element.replaceChildren();
-        element.dataset.level = load > capacity ? "exceeded" : !complete || load >= capacity * 0.9 ? "warning" : "normal";
-        const label = document.createElement("strong");
-        label.textContent = `${vehicle.name}: ${fmtQty(load)} / ${fmtQty(capacity)} pallets equivalentes${complete ? ` · ${num(result.percent).toFixed(1)}%` : " · Cálculo incompleto"}`;
-        const detail = document.createElement("span");
-        detail.textContent = `${fmtQty(boxes)} cajas seleccionadas · Estimado según cajas por pallet de cada producto.`;
-        if (num(result.existing_pallets)) detail.textContent += ` Incluye ${fmtQty(num(result.existing_pallets))} pallets de la ruta.`;
-        if (load > capacity) detail.textContent += ` Excede por ${fmtQty(load - capacity)} pallets.`;
-        if (!complete) detail.textContent += " Faltan datos; no se puede confirmar el espacio disponible.";
-        element.append(label);
-        if (complete && capacity > 0) {
-          const progress = document.createElement("progress");
-          progress.max = capacity; progress.value = Math.min(load, capacity);
-          progress.setAttribute("aria-label", `Ocupación estimada de ${vehicle.name}`);
-          element.append(progress);
-        }
-        element.append(detail);
-        if (result.missing?.length) {
-          const missing = document.createElement("span");
-          missing.textContent = result.missing.slice(0, 5).map(item => `${item.sku}: ${item.reason}`).join(" · ");
-          element.append(missing);
-        }
-      } catch (error) {
-        if (capacityRequests.get(element) !== request) return;
-        element.dataset.level = "warning";
-        element.textContent = `${fmtQty(boxes)} cajas · Ocupación sin calcular: ${error.message}`;
-        // A subsequent selection/refresh can retry a transient WMS failure.
-        capacityRequests.delete(element);
-      }
-    }, 350);
-  }
-
-  function updatePlanningCapacity() {
-    const route = state.planningOptions?.routes.find(item => item.id === planningModal.querySelector("[data-mlv-plan-route]").value);
-    const vehicleId = planningModal.querySelector("[data-mlv-plan-vehicle]").value;
-    const vehicle = selectedVehicle(vehicleId) || (route?.vehicle?.id === vehicleId ? route.vehicle : null);
-    const selected = state.pendingKomodinAction?.soNumbers || [];
-    let total = 0;
-    let unknown = 0;
-    for (const so of selected) {
-      const quantity = Number(state.lastData[so]?.quantities?.total);
-      if (Number.isFinite(quantity) && quantity > 0) total += quantity;
-      else unknown += 1;
-    }
-    // Komodin puede incluir transferencias/ensambles sin enriquecimiento Milov.
-    for (const row of findWaveTable()?.tBodies[0]?.rows || []) {
-      if (row.querySelector('input[type="checkbox"]')?.checked && !SO_RE.test(row.dataset.mlvSo || "")) unknown += 1;
-    }
-    let existing = 0;
-    for (const item of route?.assigned_load || []) {
-      if (selected.includes(item.sales_order_number)) continue;
-      if (item.quantity === null || !Number.isFinite(Number(item.quantity)) || Number(item.quantity) <= 0) unknown += 1;
-      else existing += Number(item.quantity);
-    }
-    renderCapacity(planningModal.querySelector("[data-mlv-plan-capacity]"), vehicle, total, unknown, existing, route?.id || null);
-  }
-
-  function selectedSoNumbers(table = findWaveTable()) {
-    if (!table?.tBodies[0]) return [];
-    const selected = [];
-    for (const row of table.tBodies[0].rows) {
-      const checkbox = row.querySelector('input[type="checkbox"]');
-      if (checkbox?.checked && SO_RE.test(row.dataset.mlvSo || "")) {
-        selected.push(row.dataset.mlvSo);
-      }
-    }
-    return [...new Set(selected)];
+    const parts = [
+      `${selection.count} seleccionada${selection.count === 1 ? "" : "s"}`,
+      `${fmtQty(selection.boxes)} unid.`,
+      `${selection.load.weight_complete ? "" : "≥ "}${fmtKg(selection.load.weight_kg)}`,
+    ];
+    if (num(selection.load.volume_m3)) parts.push(fmtM3(selection.load.volume_m3));
+    if (selection.pickups.length) parts.push(`${selection.pickups.length} retiro en bodega (no van en camión)`);
+    if (selection.unknown) parts.push(`${selection.unknown} sin datos Milov`);
+    chip.textContent = parts.join(" · ");
+    chip.title = selection.load.weight_complete ? "" : missingSummary(selection.load.missing);
   }
 
   // --------------------------------------------------------------------------
-  // Planeación del wave: fecha, chofer y ruta opcional
+  // Catálogos y viajes del día
+  // --------------------------------------------------------------------------
+
+  async function loadOptions(date, force = false) {
+    const cached = state.optionsByDate.get(date);
+    if (!force && cached && Date.now() - cached.at < OPTIONS_TTL_MS) return cached.data;
+    const response = await chrome.runtime.sendMessage({ type: "MLV_PLANNING_OPTIONS", date });
+    if (!response?.ok) throw new Error(response?.error || "No se pudieron cargar vehículos, choferes y viajes");
+    const data = {
+      appBase: response.appBase || "",
+      drivers: Array.isArray(response.drivers) ? response.drivers : [],
+      vehicles: Array.isArray(response.vehicles) ? response.vehicles : [],
+      trips: Array.isArray(response.trips) ? response.trips : [],
+    };
+    state.optionsByDate.set(date, { at: Date.now(), data });
+    return data;
+  }
+
+  function vehicleById(options, id) {
+    return options?.vehicles.find((vehicle) => vehicle.id === id) || null;
+  }
+
+  function tripTitle(trip) {
+    if (trip.kind === "route") return `${trip.route_number}${trip.status === "en_curso" ? " · en curso" : " · programada"}`;
+    return `${trip.ola_numbers.join(", ")} · espera paquetes`;
+  }
+
+  async function renderTrucks(force) {
+    const list = bar.querySelector("[data-mlv-trucks-list]");
+    const status = bar.querySelector("[data-mlv-trucks-status]");
+    const date = bar.querySelector("[data-mlv-trucks-date]").value;
+    if (!date) return;
+    state.trucksDate = date;
+    status.textContent = "Cargando…";
+    try {
+      const options = await loadOptions(date, force);
+      if (state.trucksDate !== date) return;
+      list.replaceChildren();
+      const byVehicle = new Map();
+      for (const trip of options.trips) {
+        const key = trip.vehicle_id || "";
+        byVehicle.set(key, [...(byVehicle.get(key) || []), trip]);
+      }
+      const vehicles = [...options.vehicles].sort((a, b) =>
+        (byVehicle.has(b.id) ? 1 : 0) - (byVehicle.has(a.id) ? 1 : 0) || a.name.localeCompare(b.name));
+      for (const vehicle of vehicles) {
+        list.append(truckCard(vehicle, byVehicle.get(vehicle.id) || []));
+      }
+      if (byVehicle.has("")) list.append(truckCard(null, byVehicle.get("")));
+      status.textContent = `${options.trips.length} viaje${options.trips.length === 1 ? "" : "s"} activo${options.trips.length === 1 ? "" : "s"} el ${fmtDate(date)}`;
+    } catch (error) {
+      status.textContent = error.message;
+    }
+  }
+
+  function truckCard(vehicle, trips) {
+    const card = document.createElement("div");
+    card.className = "mlv-truck";
+    const head = document.createElement("div");
+    head.className = "mlv-truck-head";
+    const name = document.createElement("strong");
+    name.textContent = vehicle ? vehicle.name : "Sin vehículo asignado";
+    head.append(name);
+    if (vehicle) head.append(dim(capacityLabel(vehicle)));
+    card.append(head);
+    if (!trips.length) {
+      card.append(dim("Libre"));
+      return card;
+    }
+    for (const trip of trips) {
+      const row = document.createElement("div");
+      row.className = "mlv-truck-trip";
+      row.append(stacked(tripTitle(trip), [trip.driver?.name || "Sin chofer", `${trip.items.length} SO`].join(" · ")));
+      row.append(meter(trip.load, vehicle, true));
+      card.append(row);
+    }
+    return card;
+  }
+
+  function capacityLabel(vehicle) {
+    if (!vehicle) return "";
+    const parts = [];
+    if (num(vehicle.max_weight_kg)) parts.push(`${fmtKg(vehicle.max_weight_kg)} máx.`);
+    if (num(vehicle.max_volume_m3)) parts.push(fmtM3(vehicle.max_volume_m3));
+    return parts.length ? parts.join(" · ") : "Capacidad sin configurar en Milov";
+  }
+
+  /**
+   * Ocupación por peso y volumen. La versión compacta (tarjetas de viaje) usa
+   * una línea y una sola barra: la del recurso más ocupado.
+   */
+  function meter(load, vehicle, compact = false) {
+    const status = capacityStatus(load, vehicle);
+    const wrap = document.createElement("div");
+    wrap.className = "mlv-meter" + (compact ? " mlv-meter-compact" : "");
+    wrap.dataset.level = status.level;
+    const weight = ["Peso", load.weight_kg, vehicle?.max_weight_kg, load.weight_complete, fmtKg, status.weight_percent];
+    const volume = ["Volumen", load.volume_m3, vehicle?.max_volume_m3, load.volume_complete, fmtM3, status.volume_percent];
+    const caption = ([, value, max, complete, fmt, percent]) =>
+      `${complete ? "" : "≥ "}${fmt(value)}${num(max) ? ` / ${fmt(max)}` : ""}${percent !== null ? ` · ${percent.toFixed(0)}%` : ""}`;
+    if (compact) {
+      const line = document.createElement("div");
+      line.className = "mlv-meter-line";
+      const label = document.createElement("span");
+      label.textContent = [caption(weight), num(load.volume_m3) || num(vehicle?.max_volume_m3) ? caption(volume) : null].filter(Boolean).join(" · ");
+      line.append(label);
+      const worst = (status.volume_percent ?? -1) > (status.weight_percent ?? -1) ? volume : weight;
+      if (num(worst[2])) line.append(progressBar(worst[1], worst[2], `${worst[0]} ocupado`));
+      wrap.append(line);
+      return wrap;
+    }
+    const rows = [weight];
+    if (num(vehicle?.max_volume_m3) || num(load.volume_m3)) rows.push(volume);
+    for (const [label, value, max, complete, fmt, percent] of rows) {
+      const line = document.createElement("div");
+      line.className = "mlv-meter-line";
+      const text = document.createElement("span");
+      text.textContent = `${label}: ${caption([label, value, max, complete, fmt, percent])}`;
+      line.append(text);
+      if (num(max)) line.append(progressBar(value, max, `${label} ocupado`));
+      wrap.append(line);
+    }
+    return wrap;
+  }
+
+  function progressBar(value, max, label) {
+    const progress = document.createElement("progress");
+    progress.max = num(max);
+    progress.value = Math.min(num(value), num(max));
+    progress.setAttribute("aria-label", label);
+    return progress;
+  }
+
+  // --------------------------------------------------------------------------
+  // Planeación del wave: fecha, camión (viaje) y chofer
   // --------------------------------------------------------------------------
 
   function isWaveCreateAction(element) {
@@ -645,16 +745,30 @@
       /\b(?:crear|generar|guardar|procesar|create|generate|save|new|nuevo)\b/.test(label);
   }
 
+  /**
+   * Komodin rechaza el wave sin 2 salidas o con campos obligatorios vacíos
+   * (Referencia, Slot). En ese caso se deja pasar su propia alerta y no se
+   * guarda en Milov una OLA de un wave que no se va a crear.
+   */
+  function komodinWillReject() {
+    const table = findWaveTable();
+    const checked = table?.tBodies[0]?.querySelectorAll('input[type="checkbox"]:checked').length || 0;
+    if (checked < 2) return true;
+    // Mismo criterio que el botón de Komodin: todos los [data-required] del documento.
+    return [...document.querySelectorAll("[data-required]")]
+      .some((field) => !field.closest(".mlv-bar, .mlv-modal") && !String(field.value || "").trim());
+  }
+
   function interceptWaveClick(event) {
     const action = event.target.closest?.('button, input[type="submit"], input[type="button"], a');
     if (!action || bypassClickOnce.has(action) || !isWaveCreateAction(action)) return;
 
-    const soNumbers = selectedSoNumbers();
-    if (soNumbers.length === 0) return;
+    const selection = selectionBreakdown();
+    if (selection.deliveries.length + selection.pickups.length === 0 || komodinWillReject()) return;
 
     event.preventDefault();
     event.stopImmediatePropagation();
-    openPlanningModal({ type: "click", target: action, soNumbers }).catch((error) => {
+    openPlanningModal({ type: "click", target: action, selection }).catch((error) => {
       console.error("[milov-ext] No se pudo abrir la planeación", error);
     });
   }
@@ -665,42 +779,58 @@
     const submitter = event.submitter;
     if (!isWaveCreateAction(submitter)) return;
 
-    const soNumbers = selectedSoNumbers();
-    if (soNumbers.length === 0) return;
+    const selection = selectionBreakdown();
+    if (selection.deliveries.length + selection.pickups.length === 0 || komodinWillReject()) return;
 
     event.preventDefault();
     event.stopImmediatePropagation();
-    openPlanningModal({ type: "submit", form, submitter, soNumbers }).catch((error) => {
+    openPlanningModal({ type: "submit", form, submitter, selection }).catch((error) => {
       console.error("[milov-ext] No se pudo abrir la planeación", error);
     });
   }
 
   async function openPlanningModal(pendingAction) {
     ensurePlanningModal();
+    const selection = pendingAction.selection;
     state.pendingKomodinAction = pendingAction;
+    modal = {
+      pending: pendingAction,
+      selection,
+      date: suggestedScheduledDate([...selection.deliveries, ...selection.pickups]),
+      options: null,
+      target: "new",
+      vehicleId: "",
+      driverId: "",
+      confirmOver: false,
+      loadToken: 0,
+    };
     planningModal.hidden = false;
     document.documentElement.classList.add("mlv-modal-open");
+    planningModal.querySelector("[data-mlv-plan-date]").value = modal.date;
+    planningModal.querySelector("[data-mlv-plan-confirm]").checked = false;
+    renderSelectionSummary();
+    showPlanningError("");
+    await reloadModalOptions(false);
+  }
 
-    planningModal.querySelector("[data-mlv-plan-count]").textContent =
-      `${pendingAction.soNumbers.length} salida${pendingAction.soNumbers.length === 1 ? "" : "s"}`;
-    planningModal.querySelector("[data-mlv-plan-sos]").textContent = pendingAction.soNumbers.join(", ");
-    planningModal.querySelector("[data-mlv-plan-date]").value = suggestedScheduledDate(pendingAction.soNumbers);
-    planningModal.querySelector("[data-mlv-plan-date]").disabled = false;
-    planningModal.querySelector("[data-mlv-plan-driver]").disabled = false;
-    planningModal.querySelector("[data-mlv-plan-error]").hidden = true;
-    planningModal.querySelector("[data-mlv-plan-save]").disabled = true;
-    setPlanningModalStatus("Cargando choferes y rutas…");
-
-    try { await loadPlanningOptions(); }
-    catch (error) {
+  async function reloadModalOptions(force) {
+    const token = ++modal.loadToken;
+    const saveButton = planningModal.querySelector("[data-mlv-plan-save]");
+    saveButton.disabled = true;
+    setPlanningModalStatus("Cargando viajes, vehículos y choferes…");
+    try {
+      const options = await loadOptions(modal.date, force);
+      if (!modal || token !== modal.loadToken) return;
+      modal.options = options;
+      if (modal.target !== "new" && !options.trips.some((trip) => trip.key === modal.target)) modal.target = "new";
+      renderPlanningOptions();
+      setPlanningModalStatus("");
+      saveButton.disabled = false;
+    } catch (error) {
+      if (!modal || token !== modal.loadToken) return;
       showPlanningError(error.message);
       setPlanningModalStatus("");
-      return;
     }
-
-    renderPlanningOptions();
-    planningModal.querySelector("[data-mlv-plan-save]").disabled = false;
-    setPlanningModalStatus("");
   }
 
   function ensurePlanningModal() {
@@ -714,34 +844,34 @@
         <div class="mlv-modal-header">
           <div>
             <h2 id="mlv-plan-title">Planificar wave en Milov</h2>
-            <p><strong data-mlv-plan-count></strong> quedarán en espera de sus paquetes.</p>
+            <p data-mlv-plan-summary></p>
           </div>
           <button type="button" class="mlv-modal-close" data-mlv-plan-cancel aria-label="Cerrar">×</button>
         </div>
-        <div class="mlv-modal-sos" data-mlv-plan-sos></div>
+        <details class="mlv-modal-sos">
+          <summary data-mlv-plan-count></summary>
+          <div data-mlv-plan-sos></div>
+        </details>
         <form data-mlv-plan-form>
-          <label>
+          <label class="mlv-field-inline">
             Fecha de salida
             <input type="date" data-mlv-plan-date required>
           </label>
-          <label>
-            Chofer
-            <select data-mlv-plan-driver required>
-              <option value="">Seleccionar chofer…</option>
-            </select>
-          </label>
-          <label>
-            Vehículo
-            <select data-mlv-plan-vehicle><option value="">Sin vehículo seleccionado</option></select>
-          </label>
-          <div class="mlv-capacity" data-mlv-plan-capacity aria-live="polite"></div>
-          <label>
-            Ruta existente (opcional)
-            <select data-mlv-plan-route>
-              <option value="">Crear ruta cuando llegue el primer paquete</option>
-            </select>
-          </label>
-          <p class="mlv-modal-help">Puedes reutilizar una ruta programada o en curso. Al elegirla se usarán su fecha y chofer.</p>
+          <div class="mlv-pickup-note" data-mlv-plan-pickups hidden></div>
+          <fieldset class="mlv-trip-picker" data-mlv-plan-delivery>
+            <legend>¿En qué camión va?</legend>
+            <div class="mlv-trip-list" data-mlv-plan-trips role="radiogroup" aria-label="Viaje"></div>
+            <div class="mlv-trip-fields">
+              <label>Vehículo <select data-mlv-plan-vehicle></select></label>
+              <label>Chofer <select data-mlv-plan-driver><option value="">Seleccionar chofer…</option></select></label>
+            </div>
+            <div class="mlv-vehicle-hint" data-mlv-plan-hint hidden></div>
+            <div class="mlv-capacity" data-mlv-plan-capacity aria-live="polite"></div>
+            <label class="mlv-confirm" data-mlv-plan-confirm-row hidden>
+              <input type="checkbox" data-mlv-plan-confirm>
+              Confirmo que la carga excede la capacidad del vehículo
+            </label>
+          </fieldset>
           <div class="mlv-modal-error" data-mlv-plan-error hidden></div>
           <div class="mlv-modal-status" data-mlv-plan-status></div>
           <div class="mlv-modal-actions">
@@ -757,88 +887,260 @@
       button.addEventListener("click", closePlanningModal);
     }
     planningModal.querySelector(".mlv-modal-backdrop").addEventListener("click", closePlanningModal);
-    planningModal.querySelector("[data-mlv-plan-route]").addEventListener("change", syncRouteSelection);
-    planningModal.querySelector("[data-mlv-plan-vehicle]").addEventListener("change", () => {
-      state.vehicleId = planningModal.querySelector("[data-mlv-plan-vehicle]").value;
-      bar.querySelector("[data-mlv-vehicle]").value = state.vehicleId;
-      updatePlanningCapacity();
-      const table = findWaveTable();
-      if (table) updateSelectionSummary(table);
+    planningModal.addEventListener("keydown", (event) => {
+      if (event.key === "Escape") closePlanningModal();
+    });
+    planningModal.querySelector("[data-mlv-plan-date]").addEventListener("change", (event) => {
+      if (!event.target.value) return;
+      modal.date = event.target.value;
+      void reloadModalOptions(false);
+    });
+    planningModal.querySelector("[data-mlv-plan-trips]").addEventListener("change", (event) => {
+      if (!event.target.matches("[data-mlv-trip]")) return;
+      selectTarget(event.target.value);
+    });
+    planningModal.querySelector("[data-mlv-plan-vehicle]").addEventListener("change", (event) => {
+      modal.vehicleId = event.target.value;
+      renderCapacity();
+    });
+    planningModal.querySelector("[data-mlv-plan-driver]").addEventListener("change", (event) => {
+      modal.driverId = event.target.value;
+    });
+    planningModal.querySelector("[data-mlv-plan-confirm]").addEventListener("change", (event) => {
+      modal.confirmOver = event.target.checked;
     });
     planningModal.querySelector("[data-mlv-plan-form]").addEventListener("submit", saveWavePlan);
   }
 
-  function renderPlanningOptions() {
-    const driverSelect = planningModal.querySelector("[data-mlv-plan-driver]");
-    const routeSelect = planningModal.querySelector("[data-mlv-plan-route]");
-    driverSelect.innerHTML = '<option value="">Seleccionar chofer…</option>';
-    routeSelect.innerHTML = '<option value="">Crear ruta cuando llegue el primer paquete</option>';
-    const vehicleSelect = planningModal.querySelector("[data-mlv-plan-vehicle]");
-    fillVehicleOptions(vehicleSelect, state.vehicleId);
-    vehicleSelect.disabled = false;
-
-    for (const driver of state.planningOptions.drivers) {
-      const option = document.createElement("option");
-      option.value = driver.id;
-      option.textContent = personName(driver) || "Chofer";
-      driverSelect.appendChild(option);
+  function renderSelectionSummary() {
+    const { selection } = modal;
+    const total = selection.deliveries.length + selection.pickups.length;
+    const parts = [`${total} SO`];
+    if (selection.deliveries.length) {
+      parts.push(`${selection.load.weight_complete ? "" : "≥ "}${fmtKg(selection.load.weight_kg)} de reparto`);
+      if (num(selection.load.volume_m3)) parts.push(fmtM3(selection.load.volume_m3));
     }
+    planningModal.querySelector("[data-mlv-plan-summary]").textContent = parts.join(" · ");
+    planningModal.querySelector("[data-mlv-plan-count]").textContent =
+      `Ver SO (${selection.deliveries.length} reparto${selection.pickups.length ? `, ${selection.pickups.length} retiro en bodega` : ""}${selection.unknown ? `, ${selection.unknown} sin datos Milov` : ""})`;
+    const sos = planningModal.querySelector("[data-mlv-plan-sos]");
+    sos.replaceChildren();
+    for (const so of selection.deliveries) sos.append(chip(so, ""));
+    for (const so of selection.pickups) sos.append(chip(so, "amber", PICKUP_LABEL));
 
-    for (const route of state.planningOptions.routes) {
-      const option = document.createElement("option");
-      option.value = route.id;
-      option.textContent = [
-        route.route_number,
-        route.scheduled_date,
-        personName(route.driver) || "sin chofer",
-        route.status === "en_curso" ? "en curso" : "programada",
-        `${Number(route.package_count || 0)} paq.`,
-      ].join(" · ");
-      routeSelect.appendChild(option);
-    }
-    updatePlanningCapacity();
+    const pickups = planningModal.querySelector("[data-mlv-plan-pickups]");
+    pickups.hidden = selection.pickups.length === 0;
+    pickups.textContent = selection.deliveries.length
+      ? `${selection.pickups.length} SO de retiro en bodega: van en el wave de Komodin pero no se cargan al camión ni se asignan a ruta.`
+      : "Todas las SO son de retiro en bodega: no necesitan camión ni chofer. Sus paquetes quedarán listos para entrega en bodega.";
+    planningModal.querySelector("[data-mlv-plan-delivery]").hidden = selection.deliveries.length === 0;
   }
 
-  function syncRouteSelection(event) {
-    const routeId = event.target.value;
-    const dateInput = planningModal.querySelector("[data-mlv-plan-date]");
+  function chip(label, tone, title) {
+    const span = document.createElement("span");
+    span.className = `mlv-chip-so${tone ? ` mlv-chip-${tone}` : ""}`;
+    span.textContent = label;
+    if (title) span.title = title;
+    return span;
+  }
+
+  function renderPlanningOptions() {
+    const { options } = modal;
+    const tripsList = planningModal.querySelector("[data-mlv-plan-trips]");
+    tripsList.replaceChildren();
+    tripsList.append(tripOption("new", "Nuevo viaje", "Elige el vehículo y el chofer", null, null));
+    for (const trip of options.trips) {
+      const vehicle = vehicleById(options, trip.vehicle_id);
+      tripsList.append(tripOption(
+        trip.key,
+        `${vehicle ? vehicle.name : "Sin vehículo"} · ${tripTitle(trip)}`,
+        `${trip.driver?.name || "Sin chofer"} · ${trip.items.length} SO`,
+        trip.load,
+        vehicle,
+      ));
+    }
+    if (!options.trips.length) {
+      const empty = document.createElement("p");
+      empty.className = "mlv-dim mlv-small";
+      empty.textContent = `No hay viajes planificados para el ${fmtDate(modal.date)}.`;
+      tripsList.append(empty);
+    }
+
     const driverSelect = planningModal.querySelector("[data-mlv-plan-driver]");
-    dateInput.disabled = !!routeId;
-    driverSelect.disabled = false;
+    driverSelect.replaceChildren(new Option("Seleccionar chofer…", ""));
+    for (const driver of options.drivers) driverSelect.append(new Option(personName(driver) || "Chofer", driver.id));
+    selectTarget(modal.target);
+  }
+
+  function tripOption(value, title, subtitle, load, vehicle) {
+    const label = document.createElement("label");
+    label.className = "mlv-trip";
+    const input = document.createElement("input");
+    input.type = "radio";
+    input.name = "mlv-trip";
+    input.value = value;
+    input.dataset.mlvTrip = "";
+    const body = document.createElement("div");
+    body.className = "mlv-trip-body";
+    body.append(stacked(title, subtitle));
+    if (load) body.append(meter(load, vehicle, true));
+    label.append(input, body);
+    return label;
+  }
+
+  function selectTarget(key) {
+    modal.target = key;
+    const trip = currentTrip();
+    for (const input of planningModal.querySelectorAll("[data-mlv-trip]")) input.checked = input.value === key;
+
     const vehicleSelect = planningModal.querySelector("[data-mlv-plan-vehicle]");
-    vehicleSelect.disabled = false;
-    if (!routeId) {
-      fillVehicleOptions(vehicleSelect, state.vehicleId);
-      updatePlanningCapacity();
-      return;
+    const driverSelect = planningModal.querySelector("[data-mlv-plan-driver]");
+    if (trip) {
+      modal.vehicleId = trip.vehicle_id || modal.vehicleId;
+      modal.driverId = trip.driver?.id || modal.driverId;
     }
-    const route = state.planningOptions?.routes.find((item) => item.id === routeId);
-    if (!route) return;
-    fillVehicleOptions(vehicleSelect, route.vehicle_id || state.vehicleId, route.vehicle);
-    vehicleSelect.disabled = !!route.vehicle_id;
-    dateInput.value = route.scheduled_date || "";
-    if (route.driver_id) {
-      driverSelect.value = route.driver_id;
-      driverSelect.disabled = true;
+    fillVehicleOptions(vehicleSelect, modal.vehicleId);
+    modal.vehicleId = vehicleSelect.value;
+    // El chofer de un viaje existente puede ya no estar activo en el catálogo.
+    if (trip?.driver && ![...driverSelect.options].some((option) => option.value === trip.driver.id)) {
+      driverSelect.append(new Option(trip.driver.name, trip.driver.id));
     }
-    updatePlanningCapacity();
+    driverSelect.value = modal.driverId;
+    if (driverSelect.value !== modal.driverId) modal.driverId = "";
+    // Un viaje existente conserva su vehículo y chofer; solo se completan si faltan.
+    vehicleSelect.disabled = !!trip?.vehicle_id;
+    driverSelect.disabled = !!trip?.driver;
+    renderCapacity();
+  }
+
+  function currentTrip() {
+    return modal.target === "new" ? null : modal.options?.trips.find((trip) => trip.key === modal.target) || null;
+  }
+
+  function fillVehicleOptions(select, value) {
+    const { options } = modal;
+    select.replaceChildren(new Option("Sin vehículo (no se valida capacidad)", ""));
+    for (const vehicle of options.vehicles) {
+      const trips = options.trips.filter((trip) => trip.vehicle_id === vehicle.id);
+      const busy = trips.length
+        ? `${trips.length} viaje${trips.length === 1 ? "" : "s"}: ${fmtKg(trips.reduce((sum, trip) => sum + num(trip.load.weight_kg), 0))}`
+        : "libre";
+      select.append(new Option(
+        `${vehicle.name}${vehicle.plate && !vehicle.name.replace(/\s/g, "").includes(vehicle.plate.replace(/\s/g, "")) ? ` · ${vehicle.plate}` : ""} — ${capacityLabel(vehicle)} · ${busy}${vehicle.is_active === false ? " (inactivo)" : ""}`,
+        vehicle.id,
+      ));
+    }
+    select.value = value || "";
+  }
+
+  function renderCapacity() {
+    const element = planningModal.querySelector("[data-mlv-plan-capacity]");
+    const hint = planningModal.querySelector("[data-mlv-plan-hint]");
+    const confirmRow = planningModal.querySelector("[data-mlv-plan-confirm-row]");
+    const trip = currentTrip();
+    const vehicle = vehicleById(modal.options, modal.vehicleId);
+    const selected = new Set([...modal.selection.deliveries, ...modal.selection.pickups]);
+    const remaining = (trip?.items || []).filter((item) => !item.sales_order_number || !selected.has(item.sales_order_number));
+    const existing = combineLoads(remaining.map((item) => item.load));
+    const total = combineLoads([existing, modal.selection.load]);
+    const status = capacityStatus(total, vehicle);
+    modal.status = status;
+
+    element.replaceChildren();
+    element.dataset.level = status.level;
+    const title = document.createElement("strong");
+    title.textContent = vehicle
+      ? `${vehicle.name}: ${status.level === "exceeded" ? "excede su capacidad" : status.level === "unknown" ? "capacidad sin configurar en Milov" : "carga del viaje"}`
+      : "Sin vehículo: se muestra la carga, pero no se valida capacidad";
+    element.append(title, meter(total, vehicle));
+    const detail = document.createElement("span");
+    const wave = `${modal.selection.load.weight_complete ? "" : "≥ "}${fmtKg(modal.selection.load.weight_kg)}`;
+    detail.textContent = remaining.length
+      ? `Esta wave ${wave} + ya en el viaje ${existing.weight_complete ? "" : "≥ "}${fmtKg(existing.weight_kg)} (${remaining.length} SO).`
+      : `Esta wave ${wave}.`;
+    if (status.over_weight_kg) detail.textContent += ` Excede por ${fmtKg(status.over_weight_kg)}.`;
+    if (status.over_volume_m3) detail.textContent += ` Excede por ${fmtM3(status.over_volume_m3)}.`;
+    element.append(detail);
+    if (!total.weight_complete || !total.volume_complete || modal.selection.unknown) element.append(missingDetails(total, modal.selection.unknown));
+
+    // Mismo vehículo con otro viaje ese día: ofrecer sumarse en vez de crear otro.
+    const others = vehicle ? modal.options.trips.filter((item) => item.vehicle_id === vehicle.id && item.key !== trip?.key) : [];
+    hint.hidden = !(modal.target === "new" && others.length);
+    hint.replaceChildren();
+    if (!hint.hidden) {
+      hint.append(text(`${vehicle.name} ya tiene ${others.length === 1 ? "un viaje" : `${others.length} viajes`} el ${fmtDate(modal.date)}: `));
+      for (const other of others) {
+        const button = document.createElement("button");
+        button.type = "button";
+        button.className = "mlv-link";
+        button.textContent = `Sumar a ${other.route_number || other.ola_numbers.join(", ")} (${fmtKg(other.load.weight_kg)})`;
+        button.addEventListener("click", () => selectTarget(other.key));
+        hint.append(button, text(" "));
+      }
+      hint.append(text("o crea un viaje nuevo si el camión sale dos veces."));
+    }
+
+    confirmRow.hidden = !status.exceeded;
+    if (!status.exceeded) {
+      modal.confirmOver = false;
+      planningModal.querySelector("[data-mlv-plan-confirm]").checked = false;
+    }
+  }
+
+  function missingDetails(load, unknownCount) {
+    const details = document.createElement("details");
+    details.className = "mlv-missing";
+    const summary = document.createElement("summary");
+    const count = load.missing.length;
+    summary.textContent = [
+      count ? `${count} producto${count === 1 ? "" : "s"} sin datos completos` : null,
+      unknownCount ? `${unknownCount} salida${unknownCount === 1 ? "" : "s"} sin datos Milov` : null,
+    ].filter(Boolean).join(" · ") + ": el total es un mínimo";
+    details.append(summary);
+    const list = document.createElement("ul");
+    for (const item of load.missing.slice(0, 15)) {
+      const li = document.createElement("li");
+      const what = item.missing.map((field) => MISSING_LABELS[field] || field).join(", ");
+      li.append(text(`${item.sku} · ${item.name} (${fmtQty(item.quantity)} ${item.unit || ""}) — falta ${what} `));
+      if (modal.options?.appBase && item.product_id && (item.missing.includes("weight") || item.missing.includes("volume"))) {
+        const link = document.createElement("a");
+        link.href = `${modal.options.appBase}/productos?buscar=${encodeURIComponent(item.sku)}`;
+        link.target = "_blank";
+        link.rel = "noopener";
+        link.textContent = "Completar en Milov";
+        li.append(link);
+      }
+      list.append(li);
+    }
+    if (load.missing.length > 15) list.append(Object.assign(document.createElement("li"), { textContent: `… y ${load.missing.length - 15} más` }));
+    details.append(list);
+    return details;
   }
 
   async function saveWavePlan(event) {
     event.preventDefault();
     const pending = state.pendingKomodinAction;
-    if (!pending) return;
-    if (pending.soNumbers.length > 300) {
+    if (!pending || !modal?.options) return;
+    const { selection } = modal;
+    const soNumbers = [...selection.deliveries, ...selection.pickups];
+    if (soNumbers.length > 300) {
       showPlanningError("Selecciona como máximo 300 SO por wave.");
       return;
     }
-
     const scheduledDate = planningModal.querySelector("[data-mlv-plan-date]").value;
-    const driverId = planningModal.querySelector("[data-mlv-plan-driver]").value;
-    const routeId = planningModal.querySelector("[data-mlv-plan-route]").value;
-    const vehicleId = planningModal.querySelector("[data-mlv-plan-vehicle]").value;
-    if (!scheduledDate || !driverId) {
-      showPlanningError("Selecciona la fecha de salida y el chofer.");
+    const trip = currentTrip();
+    const hasDelivery = selection.deliveries.length > 0;
+    if (!scheduledDate) {
+      showPlanningError("Selecciona la fecha de salida.");
+      return;
+    }
+    if (hasDelivery && !modal.driverId) {
+      showPlanningError("Selecciona el chofer del viaje.");
+      return;
+    }
+    if (hasDelivery && modal.status?.exceeded && !modal.confirmOver) {
+      showPlanningError("La carga excede la capacidad del vehículo. Elige otro camión o confirma el exceso.");
+      planningModal.querySelector("[data-mlv-plan-confirm]").focus();
       return;
     }
 
@@ -850,15 +1152,25 @@
     try {
       const response = await chrome.runtime.sendMessage({
         type: "MLV_PLAN_WAVE",
-        soNumbers: pending.soNumbers,
+        soNumbers,
         scheduledDate,
-        driverId,
-        vehicleId: vehicleId || null,
-        routeId: routeId || null,
+        driverId: hasDelivery ? modal.driverId : null,
+        vehicleId: hasDelivery ? modal.vehicleId || null : null,
+        routeId: hasDelivery && trip?.kind === "route" ? trip.route_id : null,
+        olaId: hasDelivery && trip?.kind === "ola" ? trip.ola_id : null,
+        confirmOverCapacity: modal.confirmOver,
       });
-      if (!response?.ok) throw new Error(response?.error || "No se pudo guardar el wave");
+      if (!response?.ok) {
+        // El servidor revalida la capacidad: otro usuario pudo cargar el mismo viaje.
+        if (/excede su capacidad/i.test(response?.error || "")) {
+          state.optionsByDate.delete(scheduledDate);
+          planningModal.querySelector("[data-mlv-plan-confirm-row]").hidden = false;
+        }
+        throw new Error(response?.error || "No se pudo guardar el wave");
+      }
 
       const olaNumber = response.ola?.internal_ola_number || "OLA";
+      state.optionsByDate.delete(scheduledDate);
       closePlanningModal();
       setBarStatus(`${olaNumber} guardada · continuando en Komodin…`);
       resumeKomodinAction(pending);
@@ -892,6 +1204,7 @@
     planningModal.hidden = true;
     document.documentElement.classList.remove("mlv-modal-open");
     state.pendingKomodinAction = null;
+    modal = null;
   }
 
   function showPlanningError(message) {
@@ -914,6 +1227,12 @@
     return state.filters.entrega || localDate(new Date());
   }
 
+  function tomorrowDate() {
+    const tomorrow = new Date();
+    tomorrow.setDate(tomorrow.getDate() + 1);
+    return localDate(tomorrow);
+  }
+
   function localDate(now) {
     const year = now.getFullYear();
     const month = String(now.getMonth() + 1).padStart(2, "0");
@@ -927,20 +1246,77 @@
   }
 
   // --------------------------------------------------------------------------
+  // Carga: suma y ocupación (mismo criterio que milov-app)
+  // --------------------------------------------------------------------------
+
+  function combineLoads(loads) {
+    let weight = 0;
+    let volume = 0;
+    let weightComplete = true;
+    let volumeComplete = true;
+    const missing = new Map();
+    for (const load of loads) {
+      if (!load) {
+        weightComplete = false;
+        volumeComplete = false;
+        continue;
+      }
+      weight += num(load.weight_kg);
+      volume += num(load.volume_m3);
+      weightComplete = weightComplete && load.weight_complete !== false;
+      volumeComplete = volumeComplete && load.volume_complete !== false;
+      for (const item of load.missing || []) {
+        const key = `${item.product_id || item.sku}|${item.unit}`;
+        const current = missing.get(key);
+        if (current) current.quantity += num(item.quantity);
+        else missing.set(key, { ...item, quantity: num(item.quantity) });
+      }
+    }
+    return {
+      weight_kg: weight,
+      volume_m3: volume,
+      weight_complete: weightComplete,
+      volume_complete: volumeComplete,
+      missing: [...missing.values()].sort((a, b) => b.quantity - a.quantity),
+    };
+  }
+
+  function capacityStatus(load, vehicle) {
+    const maxWeight = num(vehicle?.max_weight_kg);
+    const maxVolume = num(vehicle?.max_volume_m3);
+    const weightPercent = maxWeight ? (num(load.weight_kg) / maxWeight) * 100 : null;
+    const volumePercent = maxVolume ? (num(load.volume_m3) / maxVolume) * 100 : null;
+    const percents = [weightPercent, volumePercent].filter((value) => value !== null);
+    const worst = percents.length ? Math.max(...percents) : null;
+    const level =
+      worst === null ? "unknown" :
+      worst > 100 ? "exceeded" :
+      worst >= 90 || !load.weight_complete || (maxVolume && !load.volume_complete) ? "warning" :
+      "ok";
+    return {
+      level,
+      exceeded: worst !== null && worst > 100,
+      weight_percent: weightPercent,
+      volume_percent: volumePercent,
+      over_weight_kg: maxWeight && load.weight_kg > maxWeight ? load.weight_kg - maxWeight : 0,
+      over_volume_m3: maxVolume && load.volume_m3 > maxVolume ? load.volume_m3 - maxVolume : 0,
+    };
+  }
+
+  // --------------------------------------------------------------------------
   // Estado / errores
   // --------------------------------------------------------------------------
 
-  function setBarStatus(text) {
+  function setBarStatus(value) {
     const el = bar?.querySelector("[data-mlv-status]");
-    if (el) el.textContent = text;
+    if (el) el.textContent = value;
   }
 
   function showError(response) {
     const el = bar?.querySelector("[data-mlv-error]");
     if (!el) return;
     el.hidden = false;
-    el.innerHTML = "";
-    el.append(escapeText(response?.error || "Error consultando milov-app"), " ");
+    el.replaceChildren(text(response?.error || "Error consultando milov-app"), text(" "));
     if (response?.code === "NO_KEY" || response?.code === "AUTH") {
       const btn = document.createElement("button");
       btn.type = "button";
@@ -967,11 +1343,21 @@
 
   function fmtQty(value) {
     if (!value) return "0";
-    return Number.isInteger(value) ? String(value) : value.toLocaleString("es-MX", { maximumFractionDigits: 4 });
+    return Number.isInteger(value) ? String(value) : value.toLocaleString("es-PA", { maximumFractionDigits: 2 });
   }
 
-  function escapeText(text) {
-    return document.createTextNode(text);
+  function fmtKg(value) {
+    const kg = num(value);
+    return `${kg.toLocaleString("es-PA", { maximumFractionDigits: kg >= 100 ? 0 : 1 })} kg`;
+  }
+
+  function fmtM3(value) {
+    return `${num(value).toLocaleString("es-PA", { maximumFractionDigits: 2 })} m³`;
+  }
+
+  function fmtDate(value) {
+    const [year, month, day] = String(value).split("-");
+    return year && month && day ? `${day}/${month}/${year}` : value;
   }
 
   // --------------------------------------------------------------------------

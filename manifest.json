@@ -1,9 +1,11 @@
 {
   "manifest_version": 3,
   "name": "Milov — Komodin Wave Enrichment",
-  "version": "0.4.0",
-  "description": "Enriquece Crear Wave y guarda la planeación de fecha, chofer y ruta en milov-app.",
-  "permissions": ["storage"],
+  "version": "0.5.0",
+  "description": "Enriquece Crear Wave con peso por SO y planifica cada wave en el camión correcto de milov-app.",
+  "permissions": [
+    "storage"
+  ],
   "host_permissions": [
     "https://milov-web-app.vercel.app/*",
     "http://localhost:3000/*"
@@ -13,9 +15,15 @@
   },
   "content_scripts": [
     {
-      "matches": ["https://milov-wms.komodin.io/wave_new/*"],
-      "js": ["content.js"],
-      "css": ["content.css"],
+      "matches": [
+        "https://milov-wms.komodin.io/wave_new/*"
+      ],
+      "js": [
+        "content.js"
+      ],
+      "css": [
+        "content.css"
+      ],
       "run_at": "document_idle"
     }
   ],

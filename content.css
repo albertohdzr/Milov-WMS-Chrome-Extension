@@ -1,4 +1,4 @@
-/* Columnas y barra de filtros inyectadas por la extensión Milov. */
+/* Columnas, barra, panel de camiones y diálogo inyectados por la extensión Milov. */
 
 .mlv-col {
   background: #eef4ff !important;
@@ -10,7 +10,7 @@
 .mlv-cell {
   font-size: 12px;
   vertical-align: middle;
-  max-width: 220px;
+  max-width: 240px;
 }
 
 .mlv-cell:first-of-type {
@@ -21,58 +21,100 @@
   text-align: right;
 }
 
+.mlv-cell[data-mlv-key="entrega"] {
+  white-space: nowrap;
+}
+
 .mlv-strong {
   font-weight: 600;
 }
 
 .mlv-dim {
-  color: #9aa3b2;
+  color: #7b8494;
 }
 
-.mlv-italic {
-  font-style: italic;
-}
-
-.mlv-notes {
-  display: inline-block;
-  max-width: 200px;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  vertical-align: bottom;
-}
-
-.mlv-badge {
-  display: inline-block;
-  margin-top: 2px;
-  padding: 1px 6px;
-  border-radius: 9px;
+.mlv-small {
   font-size: 11px;
-  font-weight: 600;
-}
-
-.mlv-badge-red {
-  background: #fdecec;
-  color: #c62828;
 }
 
 .mlv-hidden {
   display: none !important;
 }
 
-/* Barra de filtros */
+.mlv-badge {
+  display: inline-block;
+  margin-top: 2px;
+  padding: 1px 7px;
+  border-radius: 9px;
+  font-size: 11px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.mlv-badge-red {
+  background: #fdecec;
+  color: #b91c1c;
+}
+
+.mlv-badge-amber {
+  background: #fef3c7;
+  color: #92400e;
+}
+
+.mlv-link {
+  padding: 0;
+  border: 0;
+  background: none;
+  color: #1d4ed8;
+  font: inherit;
+  font-size: 11px;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+  cursor: pointer;
+}
+
+/* Notas: saltos de línea visibles, tres líneas y "Ver más" para el resto. */
+
+.mlv-notes {
+  min-width: 180px;
+  max-width: 280px;
+}
+
+.mlv-notes-text {
+  display: -webkit-box;
+  overflow: hidden;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 3;
+  line-clamp: 3;
+  white-space: pre-line;
+  overflow-wrap: anywhere;
+  line-height: 1.35;
+}
+
+.mlv-notes-open .mlv-notes-text {
+  display: block;
+  -webkit-line-clamp: unset;
+  line-clamp: unset;
+}
+
+/* Barra */
 
 .mlv-bar {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 10px;
+  display: grid;
+  gap: 8px;
   margin: 10px 0;
   padding: 10px 12px;
   background: #f6f9ff;
   border: 1px solid #dbe6fb;
   border-radius: 6px;
   font-size: 12px;
+}
+
+.mlv-bar-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
 }
 
 .mlv-bar-title {
@@ -105,22 +147,25 @@
 
 .mlv-route-filter {
   position: relative;
-  max-width: 300px;
+  max-width: 320px;
 }
 
 .mlv-route-filter summary {
+  overflow: hidden;
   padding: 4px 8px;
   border: 1px solid #ccd6e8;
   border-radius: 4px;
   background: #fff;
   cursor: pointer;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .mlv-route-options {
   position: absolute;
   z-index: 100;
-  min-width: 200px;
-  max-height: 240px;
+  min-width: 220px;
+  max-height: 260px;
   overflow: auto;
   padding: 8px;
   border: 1px solid #ccd6e8;
@@ -151,38 +196,24 @@
   background: #eef2fa;
 }
 
-.mlv-chip {
-  padding: 3px 10px;
+.mlv-selection {
+  padding: 4px 10px;
   border-radius: 12px;
+  background: #e2e8f0;
+  color: #475569;
+}
+
+.mlv-selection-active {
   background: #1d4ed8;
   color: #fff;
   font-weight: 600;
 }
 
-.mlv-capacity {
-  display: grid;
-  gap: 5px;
-  padding: 8px 12px;
-  border-radius: 6px;
-  background: #eaf5ef;
-  color: #166534;
-  font-size: 12px;
+.mlv-bar .mlv-trucks-toggle[aria-expanded="true"] {
+  border-color: #1d4ed8;
+  background: #1d4ed8;
+  color: #fff;
 }
-
-.mlv-capacity progress {
-  width: 100%;
-  height: 10px;
-  accent-color: #16a34a;
-}
-
-.mlv-capacity[data-level="warning"] {
-  background: #fff7db;
-  color: #854d0e;
-}
-
-.mlv-capacity[data-level="warning"] progress { accent-color: #ca8a04; }
-.mlv-capacity[data-level="exceeded"] { background: #fdecec; color: #b91c1c; }
-.mlv-capacity[data-level="exceeded"] progress { accent-color: #dc2626; }
 
 .mlv-status {
   color: #7b8494;
@@ -203,6 +234,110 @@
   background: #fdecec;
   color: #c62828;
   font-weight: 500;
+}
+
+/* Peso por camión */
+
+.mlv-trucks {
+  display: grid;
+  gap: 8px;
+  padding-top: 8px;
+  border-top: 1px solid #dbe6fb;
+}
+
+.mlv-trucks-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+}
+
+.mlv-trucks-list {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
+  gap: 8px;
+}
+
+.mlv-truck {
+  display: grid;
+  gap: 6px;
+  padding: 8px 10px;
+  border: 1px solid #dbe6fb;
+  border-radius: 6px;
+  background: #fff;
+}
+
+.mlv-truck-head {
+  display: grid;
+  gap: 1px;
+}
+
+.mlv-truck-trip {
+  display: grid;
+  gap: 4px;
+  padding-top: 6px;
+  border-top: 1px dashed #e2e8f0;
+}
+
+/* Medidor de ocupación */
+
+.mlv-meter {
+  display: grid;
+  gap: 4px;
+}
+
+.mlv-meter-line {
+  display: grid;
+  gap: 2px;
+}
+
+.mlv-meter progress {
+  width: 100%;
+  height: 7px;
+  overflow: hidden;
+  border: 0;
+  border-radius: 4px;
+  background: #e2e8f0;
+  -webkit-appearance: none;
+  appearance: none;
+  --mlv-bar: #16a34a;
+}
+
+.mlv-meter progress::-webkit-progress-bar { background: #e2e8f0; border-radius: 4px; }
+.mlv-meter progress::-webkit-progress-value { background: var(--mlv-bar); border-radius: 4px; }
+.mlv-meter progress::-moz-progress-bar { background: var(--mlv-bar); }
+.mlv-meter[data-level="warning"] progress { --mlv-bar: #ca8a04; }
+.mlv-meter[data-level="exceeded"] progress { --mlv-bar: #dc2626; }
+.mlv-meter[data-level="exceeded"] { color: #b91c1c; font-weight: 600; }
+.mlv-meter-compact { font-size: 11px; }
+
+.mlv-capacity {
+  display: grid;
+  gap: 6px;
+  padding: 10px 12px;
+  border-radius: 6px;
+  background: #eaf5ef;
+  color: #166534;
+  font-size: 12px;
+}
+
+.mlv-capacity[data-level="warning"] { background: #fff7db; color: #854d0e; }
+.mlv-capacity[data-level="exceeded"] { background: #fdecec; color: #b91c1c; }
+.mlv-capacity[data-level="unknown"] { background: #f1f5f9; color: #334155; }
+
+.mlv-missing summary {
+  cursor: pointer;
+  font-weight: 600;
+}
+
+.mlv-missing ul {
+  margin: 6px 0 0;
+  padding-left: 18px;
+}
+
+.mlv-missing a {
+  color: inherit;
+  font-weight: 600;
 }
 
 /* Diálogo previo a la creación del wave */
@@ -230,7 +365,7 @@
 
 .mlv-modal-card {
   position: relative;
-  width: min(520px, 100%);
+  width: min(640px, 100%);
   max-height: calc(100vh - 40px);
   overflow: auto;
   padding: 22px;
@@ -253,11 +388,11 @@
   font-weight: 700;
 }
 
-.mlv-modal-header p,
-.mlv-modal-help {
+.mlv-modal-header p {
   margin: 5px 0 0;
-  color: #64748b;
-  font-size: 12px;
+  color: #475569;
+  font-size: 13px;
+  font-weight: 600;
 }
 
 .mlv-modal-close {
@@ -278,15 +413,38 @@
 }
 
 .mlv-modal-sos {
-  max-height: 58px;
-  overflow: auto;
-  margin: 14px 0;
+  margin: 12px 0;
   padding: 8px 10px;
   border-radius: 6px;
   background: #f8fafc;
   color: #475569;
+  font-size: 12px;
+}
+
+.mlv-modal-sos summary {
+  cursor: pointer;
+}
+
+.mlv-modal-sos > div {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  max-height: 96px;
+  overflow: auto;
+  margin-top: 6px;
+}
+
+.mlv-chip-so {
+  padding: 1px 6px;
+  border-radius: 4px;
+  background: #e2e8f0;
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
   font-size: 11px;
+}
+
+.mlv-chip-amber {
+  background: #fef3c7;
+  color: #92400e;
 }
 
 .mlv-modal form {
@@ -294,7 +452,7 @@
   gap: 14px;
 }
 
-.mlv-modal form > label {
+.mlv-modal label {
   display: grid;
   gap: 6px;
   margin: 0;
@@ -303,7 +461,7 @@
   font-weight: 600;
 }
 
-.mlv-modal input,
+.mlv-modal input[type="date"],
 .mlv-modal select {
   width: 100%;
   min-height: 38px;
@@ -315,10 +473,112 @@
   font-size: 13px;
 }
 
-.mlv-modal input:focus,
-.mlv-modal select:focus {
+.mlv-modal select:disabled {
+  background: #f1f5f9;
+  color: #475569;
+}
+
+.mlv-modal input:focus-visible,
+.mlv-modal select:focus-visible,
+.mlv-modal button:focus-visible {
   border-color: #2563eb;
-  outline: 2px solid rgba(37, 99, 235, 0.15);
+  outline: 2px solid rgba(37, 99, 235, 0.35);
+  outline-offset: 1px;
+}
+
+.mlv-field-inline {
+  max-width: 220px;
+}
+
+.mlv-pickup-note {
+  padding: 9px 11px;
+  border-radius: 6px;
+  background: #fef3c7;
+  color: #78350f;
+  font-size: 12px;
+}
+
+.mlv-trip-picker {
+  display: grid;
+  gap: 10px;
+  min-width: 0;
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+
+.mlv-trip-picker legend {
+  margin-bottom: 8px;
+  padding: 0;
+  border: 0;
+  color: #172033;
+  font-size: 14px;
+  font-weight: 700;
+}
+
+.mlv-trip-list {
+  display: grid;
+  gap: 6px;
+  max-height: 260px;
+  overflow: auto;
+}
+
+.mlv-modal .mlv-trip {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 9px 11px;
+  border: 1px solid #cbd5e1;
+  border-radius: 8px;
+  font-weight: 400;
+  cursor: pointer;
+}
+
+.mlv-modal .mlv-trip:has(input:checked) {
+  border-color: #1d4ed8;
+  background: #eff6ff;
+  box-shadow: inset 0 0 0 1px #1d4ed8;
+}
+
+.mlv-trip input {
+  margin-top: 3px;
+  accent-color: #1d4ed8;
+}
+
+.mlv-trip-body {
+  display: grid;
+  flex: 1;
+  gap: 5px;
+  min-width: 0;
+}
+
+.mlv-trip-fields {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px;
+}
+
+@media (max-width: 560px) {
+  .mlv-trip-fields { grid-template-columns: 1fr; }
+}
+
+.mlv-vehicle-hint {
+  padding: 8px 10px;
+  border-radius: 6px;
+  background: #eff6ff;
+  color: #1e3a8a;
+  font-size: 12px;
+}
+
+.mlv-modal [hidden] {
+  display: none !important;
+}
+
+.mlv-modal .mlv-confirm {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: #b91c1c;
 }
 
 .mlv-modal-error {
