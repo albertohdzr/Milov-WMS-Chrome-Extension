@@ -153,7 +153,52 @@ async function handlePlanWave(payload) {
   return response;
 }
 
+async function handleExportOla(payload) {
+  const settings = await getSettings();
+  if (!settings.apiKey) {
+    return { ok: false, code: "NO_KEY", error: "Configura la API key en las opciones de la extensión." };
+  }
+  if (typeof payload?.olaId !== "string" || !payload.olaId.trim() || !["routes", "frozen"].includes(payload.report)) {
+    return { ok: false, code: "INPUT", error: "Falta la OLA o el tipo de reporte." };
+  }
+  const response = await fetch(settings.apiBase + PLANNING_PATH + "/export-xlsx", {
+    method: "POST",
+    headers: { "Content-Type": "application/json", Authorization: `Bearer ${settings.apiKey}` },
+    body: JSON.stringify({ ola_ids: [payload.olaId], report: payload.report }),
+  });
+  if (!response.ok) {
+    const body = await response.json().catch(() => ({}));
+    return { ok: false, code: "HTTP", error: body.error || `No se pudo generar el Excel (${response.status})` };
+  }
+  const mime = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet";
+  if (!response.headers.get("Content-Type")?.includes(mime)) {
+    return { ok: false, code: "HTTP", error: "Milov no devolvió un archivo Excel. Verifica que la aplicación esté actualizada." };
+  }
+  const bytes = new Uint8Array(await response.arrayBuffer());
+  let binary = "";
+  for (let offset = 0; offset < bytes.length; offset += 8192) {
+    binary += String.fromCharCode(...bytes.subarray(offset, offset + 8192));
+  }
+  const suggested = response.headers.get("Content-Disposition")?.match(/filename="([^"]+)"/)?.[1];
+  const filename = (suggested || `OLA-${payload.report}.xlsx`).replace(/[\\/:*?"<>|\x00-\x1f]/g, "_").replace(/^\.+/, "_");
+  // MV3 workers no tienen URL.createObjectURL. La descarga queda a cargo de
+  // Chrome antes de que Komodin navegue y destruya el content script.
+  const downloadId = await chrome.downloads.download({
+    url: `data:${mime};base64,${btoa(binary)}`,
+    filename,
+    conflictAction: "uniquify",
+    saveAs: false,
+  });
+  return { ok: true, downloadId };
+}
+
 chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
+  if (message?.type === "MLV_EXPORT_OLA") {
+    handleExportOla(message)
+      .then(sendResponse)
+      .catch((err) => sendResponse({ ok: false, code: "DOWNLOAD", error: String(err?.message || err) }));
+    return true;
+  }
   if (message?.type === "MLV_ENRICH") {
     handleEnrich(Array.isArray(message.soNumbers) ? message.soNumbers : [])
       .then(sendResponse)

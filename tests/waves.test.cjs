@@ -42,12 +42,13 @@ async function fixture(t, { rows = [1, 2, 3, 4], data = {}, trips = [] } = {}) {
       trips: trips.map(trip => ({ ...trip, items: trip.items.map(item => ({ ...item, load: load(item.kg) })), load: load(trip.items.reduce((sum, item) => sum + item.kg, 0)) })),
     };
     window.messages = [];
-    window.planResponse = { ok: true, ola: { internal_ola_number: 'OLA-1' } };
+    window.planResponse = { ok: true, ola: { id: 'ola-1', internal_ola_number: 'OLA-1' } };
     window.chrome = { runtime: { sendMessage: async message => {
       window.messages.push(message);
       if (message.type === 'MLV_ENRICH') return { ok: true, salesOrders: window.data };
       if (message.type === 'MLV_PLANNING_OPTIONS') return window.options;
       if (message.type === 'MLV_PLAN_WAVE') return window.planResponse;
+      if (message.type === 'MLV_EXPORT_OLA') return (message.report === 'frozen' && window.exportResponse) || { ok: true, downloadId: 1 };
     } } };
   }, { data, trips, loadWeights: [200, 300, 900] });
   await page.addScriptTag({ path: path.join(__dirname, '../content.js') });
@@ -60,6 +61,49 @@ async function openPlanning(page) {
   await page.waitForFunction(() => !document.querySelector('[data-mlv-plan-save]').disabled);
 }
 const planMessage = page => page.evaluate(() => window.messages.find(message => message.type === 'MLV_PLAN_WAVE'));
+
+test('saving downloads both Excel reports before resuming Komodin', async t => {
+  const page = await fixture(t, { rows: [1, 2] });
+  await page.locator('#all').check();
+  await openPlanning(page);
+  await page.locator('[data-mlv-plan-driver]').selectOption('d1');
+  await page.locator('[data-mlv-plan-save]').click();
+  await page.waitForFunction(() => window.resumed);
+  assert.deepEqual(await page.evaluate(() => window.messages.filter(m => m.type === 'MLV_EXPORT_OLA')), [
+    { type: 'MLV_EXPORT_OLA', olaId: 'ola-1', report: 'routes' },
+    { type: 'MLV_EXPORT_OLA', olaId: 'ola-1', report: 'frozen' },
+  ]);
+});
+
+test('failed frozen download retries only that report without saving the OLA again', async t => {
+  const page = await fixture(t, { rows: [1, 2] });
+  await page.evaluate(() => { window.exportResponse = { ok: false, error: 'Excel no disponible' }; });
+  await page.locator('#all').check();
+  await openPlanning(page);
+  await page.locator('[data-mlv-plan-driver]').selectOption('d1');
+  await page.locator('[data-mlv-plan-save]').click();
+  assert.match(await page.locator('[data-mlv-plan-error]').innerText(), /OLA ya está guardada/);
+  assert.equal(await page.evaluate(() => !!window.resumed), false);
+  assert.equal(await page.locator('[data-mlv-plan-date]').isDisabled(), true);
+  await page.evaluate(() => { window.exportResponse = null; });
+  await page.locator('[data-mlv-plan-save]').click();
+  await page.waitForFunction(() => window.resumed);
+  assert.equal(await page.evaluate(() => window.messages.filter(m => m.type === 'MLV_PLAN_WAVE').length), 1);
+  assert.deepEqual(await page.evaluate(() => window.messages.filter(m => m.type === 'MLV_EXPORT_OLA').map(m => m.report)), ['routes', 'frozen', 'frozen']);
+});
+
+test('download failure can be skipped explicitly to continue creating the Komodin wave', async t => {
+  const page = await fixture(t, { rows: [1, 2] });
+  await page.evaluate(() => { window.exportResponse = { ok: false, error: 'Sin conexión' }; });
+  await page.locator('#all').check();
+  await openPlanning(page);
+  await page.locator('[data-mlv-plan-driver]').selectOption('d1');
+  await page.locator('[data-mlv-plan-save]').click();
+  await page.locator('[data-mlv-plan-continue]').click();
+  await page.waitForFunction(() => window.resumed);
+  assert.equal(await page.locator('.mlv-modal').isVisible(), false);
+  assert.equal(await page.evaluate(() => window.messages.filter(m => m.type === 'MLV_PLAN_WAVE').length), 1);
+});
 
 test('route filter supports several routes, closes on outside click/Escape, and select-all respects filters', async t => {
   const page = await fixture(t);

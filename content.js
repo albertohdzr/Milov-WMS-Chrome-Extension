@@ -805,11 +805,18 @@
       driverId: "",
       confirmOver: false,
       loadToken: 0,
+      savedOla: null,
+      downloadedReports: new Set(),
+      busy: false,
     };
     planningModal.hidden = false;
     document.documentElement.classList.add("mlv-modal-open");
     planningModal.querySelector("[data-mlv-plan-date]").value = modal.date;
     planningModal.querySelector("[data-mlv-plan-confirm]").checked = false;
+    planningModal.querySelector("[data-mlv-plan-date]").disabled = false;
+    planningModal.querySelector("[data-mlv-plan-delivery]").disabled = false;
+    planningModal.querySelector("[data-mlv-plan-continue]").hidden = true;
+    planningModal.querySelector("[data-mlv-plan-save]").textContent = "Guardar y crear wave";
     renderSelectionSummary();
     showPlanningError("");
     await reloadModalOptions(false);
@@ -878,12 +885,20 @@
           <div class="mlv-modal-status" data-mlv-plan-status></div>
           <div class="mlv-modal-actions">
             <button type="button" data-mlv-plan-cancel>Cancelar</button>
+            <button type="button" data-mlv-plan-continue hidden>Continuar sin Excel</button>
             <button type="submit" class="mlv-primary" data-mlv-plan-save>Guardar y crear wave</button>
           </div>
         </form>
       </section>
     `;
     document.body.appendChild(planningModal);
+    planningModal.querySelector("[data-mlv-plan-continue]").addEventListener("click", () => {
+      if (modal?.busy || !modal?.savedOla) return;
+      const pending = state.pendingKomodinAction;
+      closePlanningModal();
+      setBarStatus("OLA guardada · puedes descargar los Excel desde el histórico de Milov");
+      if (pending) resumeKomodinAction(pending);
+    });
 
     for (const button of planningModal.querySelectorAll("[data-mlv-plan-cancel]")) {
       button.addEventListener("click", closePlanningModal);
@@ -1122,7 +1137,11 @@
   async function saveWavePlan(event) {
     event.preventDefault();
     const pending = state.pendingKomodinAction;
-    if (!pending || !modal?.options) return;
+    if (!pending || !modal?.options || modal.busy) return;
+    if (modal.savedOla) {
+      await exportSavedOla(pending);
+      return;
+    }
     const { selection } = modal;
     const soNumbers = [...selection.deliveries, ...selection.pickups];
     if (soNumbers.length > 300) {
@@ -1148,6 +1167,9 @@
 
     const saveButton = planningModal.querySelector("[data-mlv-plan-save]");
     saveButton.disabled = true;
+    modal.busy = true;
+    planningModal.querySelector("[data-mlv-plan-date]").disabled = true;
+    planningModal.querySelector("[data-mlv-plan-delivery]").disabled = true;
     showPlanningError("");
     setPlanningModalStatus("Guardando planeación en Milov…");
 
@@ -1171,15 +1193,46 @@
         throw new Error(response?.error || "No se pudo guardar el wave");
       }
 
-      const olaNumber = response.ola?.internal_ola_number || "OLA";
+      modal.savedOla = response.ola || {};
       state.optionsByDate.delete(scheduledDate);
-      closePlanningModal();
-      setBarStatus(`${olaNumber} guardada · continuando en Komodin…`);
-      resumeKomodinAction(pending);
+      await exportSavedOla(pending);
     } catch (error) {
+      modal.busy = false;
+      planningModal.querySelector("[data-mlv-plan-date]").disabled = false;
+      planningModal.querySelector("[data-mlv-plan-delivery]").disabled = false;
       showPlanningError(error instanceof Error ? error.message : String(error));
       setPlanningModalStatus("");
       saveButton.disabled = false;
+    }
+  }
+
+  async function exportSavedOla(pending) {
+    const saveButton = planningModal.querySelector("[data-mlv-plan-save]");
+    modal.busy = true;
+    saveButton.disabled = true;
+    showPlanningError("");
+    planningModal.querySelector("[data-mlv-plan-continue]").hidden = true;
+    try {
+      if (!modal.savedOla?.id) throw new Error("Milov no devolvió el identificador de la OLA.");
+      for (const report of ["routes", "frozen"]) {
+        if (modal.downloadedReports.has(report)) continue;
+        setPlanningModalStatus(`Descargando Excel de ${report === "routes" ? "rutas" : "congelados por cliente"}…`);
+        const result = await chrome.runtime.sendMessage({ type: "MLV_EXPORT_OLA", olaId: modal.savedOla.id, report });
+        if (!result?.ok) throw new Error(result?.error || "No se pudo descargar el Excel");
+        modal.downloadedReports.add(report);
+      }
+      const olaNumber = modal.savedOla.internal_ola_number || "OLA";
+      modal.busy = false;
+      closePlanningModal();
+      setBarStatus(`${olaNumber} guardada · descargas iniciadas · continuando en Komodin…`);
+      resumeKomodinAction(pending);
+    } catch (error) {
+      modal.busy = false;
+      showPlanningError(`La OLA ya está guardada. ${error instanceof Error ? error.message : String(error)}. Puedes reintentar o continuar y descargar desde el histórico de Milov.`);
+      setPlanningModalStatus("");
+      saveButton.textContent = "Reintentar Excel";
+      saveButton.disabled = false;
+      planningModal.querySelector("[data-mlv-plan-continue]").hidden = false;
     }
   }
 
@@ -1202,7 +1255,7 @@
   }
 
   function closePlanningModal() {
-    if (!planningModal) return;
+    if (!planningModal || modal?.busy) return;
     planningModal.hidden = true;
     document.documentElement.classList.remove("mlv-modal-open");
     state.pendingKomodinAction = null;

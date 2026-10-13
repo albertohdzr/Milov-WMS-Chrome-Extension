@@ -1,10 +1,11 @@
 {
   "manifest_version": 3,
   "name": "Milov — Komodin Wave Enrichment",
-  "version": "0.5.0",
+  "version": "0.6.0",
   "description": "Enriquece Crear Wave con peso por SO y planifica cada wave en el camión correcto de milov-app.",
   "permissions": [
-    "storage"
+    "storage",
+    "downloads"
   ],
   "host_permissions": [
     "https://milov-web-app.vercel.app/*",

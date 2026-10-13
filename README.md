@@ -11,6 +11,8 @@ milov-app y guarda cada wave como una OLA asignada a un camión:
 - **Peso por camión**: carga de cada vehículo en la fecha elegida.
 - Al crear el wave: fecha de salida, **viaje** (sumarse a uno existente o crear
   uno nuevo), vehículo y chofer, con la ocupación por peso y volumen.
+- Al guardar la OLA descarga dos Excel: **órdenes por ruta** y **artículos
+  congelados por cliente** (SKU, artículo, cantidad y unidad por orden).
 
 ## Cómo funciona
 
@@ -22,9 +24,28 @@ milov-app y guarda cada wave como una OLA asignada a un camión:
   `Authorization: Bearer mlv_ext_…`; el content script nunca ve la API key.
   Cache de 2 minutos por SO.
 - Al pulsar **Crear Wave** la extensión detiene la acción, guarda la OLA en
-  milov-app y después continúa con Komodin. Si Komodin va a rechazar el wave
+  milov-app, inicia las dos descargas y después continúa con Komodin. Si Komodin va a rechazar el wave
   (menos de 2 salidas o campos obligatorios vacíos), no se intercepta y se ve
   la alerta de Komodin.
+- Si falla un Excel, **Reintentar Excel** descarga únicamente los reportes
+  pendientes sin volver a guardar la OLA. **Continuar sin Excel** permite seguir
+  en Komodin y descargarlos después desde el histórico de Milov. Los archivos
+  corresponden a la OLA guardada, incluso si después se cancela la acción de Komodin.
+
+## Actualización 0.6.0
+
+Desplegar primero los cambios de **Milov-Web-App** y luego actualizar/recargar
+la extensión. Esta versión agrega el permiso de Chrome **downloads** y usa
+`POST /api/sales-order-planning/export-xlsx` con el scope existente `wave_plan`;
+no requiere migraciones nuevas ni regenerar las claves actuales.
+
+En el diálogo **Excel** de la web se puede elegir **Órdenes por ruta** o
+**Artículos congelados por cliente**. Ruta corresponde a la ruta de reparto;
+zona corresponde al sector del cliente. Los congelados se extraen del detalle
+guardado en la OLA y se identifican con la misma clasificación por nombre, SKU,
+grupo y descripción que usan los totales de planeación. Se conserva la unidad
+original; no se suman cajas, piezas y kg entre sí. Si no hay congelados, el
+archivo lo indica expresamente.
 
 ## Peso y volumen
 
@@ -108,7 +129,14 @@ canal instalado compatible con Playwright. Incluyen filtros combinados, cierre
 del listado de rutas, notas largas, peso parcial, retiro en bodega, peso por
 camión, viaje nuevo con exceso confirmado, sumarse a un viaje existente,
 rechazo de capacidad del servidor, validaciones de Komodin y reemplazo de la
-tabla.
+tabla, descargas de ambos reportes, errores de autenticación y reintentos.
+
+En el repositorio de Milov-Web-App, las regresiones del API, histórico y Excel
+se ejecutan sin cargar archivos de entorno ni conectar a producción:
+
+```bash
+node --test scripts/tests/ola-exports.cjs scripts/tests/vehicle-wave-planning.cjs
+```
 
 ## Notas / limitaciones
 
