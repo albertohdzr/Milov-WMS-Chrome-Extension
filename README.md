@@ -12,7 +12,8 @@ milov-app y guarda cada wave como una OLA asignada a un camión:
 - Al crear el wave: fecha de salida, **viaje** (sumarse a uno existente o crear
   uno nuevo), vehículo y chofer, con la ocupación por peso y volumen.
 - Al guardar la OLA descarga dos Excel: **órdenes por ruta** y **artículos
-  congelados por cliente** (SKU, artículo, cantidad y unidad por orden).
+  congelados por cliente** (ruta, chofer, cliente, orden, SKU, código de barras,
+  artículo, cantidad con decimales para productos por kilo y unidad).
 
 ## Cómo funciona
 
